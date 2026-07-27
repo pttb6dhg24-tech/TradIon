@@ -1,0 +1,86 @@
+# TradIon — configuración central. TODA constante del sistema vive aquí; nada hardcodeado en los .py.
+# Hardware de referencia: MacBook Pro M3, 16 GB RAM unificada, sin CUDA (DOCUMENTO_MAESTRO §7).
+
+server:
+  host: 0.0.0.0
+  port: 8443
+  ws_path: /ws                    # endpoint WebSocket: wss://<ip>:8443/ws
+  heartbeat_s: 30                 # ping/pong automático de aiohttp
+  # Certificados mkcert — obligatorios: getUserMedia exige HTTPS en los móviles (§1.4)
+  tls_cert: config/certs/tradion.pem
+  tls_key: config/certs/tradion-key.pem
+
+paths:
+  models_dir: models              # TODOS los pesos aquí; prohibido ~/.cache (auditoría M1)
+
+languages:
+  allowed: [es, ko, en]           # idiomas activos: el lobby solo ofrece estos
+  nllb_codes:                     # códigos FLORES-200 que usa NLLB
+    es: spa_Latn
+    ko: kor_Hang
+    en: eng_Latn
+
+audio:
+  sample_rate: 16000              # pipeline interno: PCM mono 16 kHz (el AudioWorklet re-muestrea)
+  vad_window_samples: 512         # requisito DURO de silero-vad v5 a 16 kHz (auditoría C1)
+  vad_threshold: 0.72
+  pre_roll_ms: 192                # audio previo al arranque de voz que se conserva (6 ventanas)
+  min_speech_ms: 300              # segmentos más cortos se descartan (clics, golpes)
+  segment_close_silence_ms: 400   # silencio que cierra un segmento (rango útil: 300-800)
+  segment_max_seconds: 15         # tope duro por segmento
+
+stt:
+  device: cuda                     # faster-whisper/CTranslate2 no usa Metal: en Mac siempre cpu
+  model_size: large-v3-turbo              # M3/16GB: medium int8 (~1.2 GB). Mínima latencia: small. Máxima calidad: large-v3-turbo
+  compute_type: int8
+  beam_size: 1                    # greedy: prioridad latencia (auditoría A4)
+  workers: 2                      # transcripciones concurrentes (hablantes simultáneos)
+  cpu_threads: 4                  # hilos de CTranslate2 por transcripción
+  partials:                       # transcripción parcial en vivo (ventana deslizante, F5.2)
+    enabled: true
+    model_size: tiny             # modelo DEDICADO a parciales (+~0.9 GB RAM): jamás compiten
+                                  # con los finales/enroll del modelo principal por el executor
+    cpu_threads: 2                # hilos del modelo de parciales
+    interval_ms: 1200             # mínimo entre pasadas parciales por hablante
+    min_speech_ms: 800            # voz acumulada antes de la primera pasada parcial
+    window_s: 4                   # solo se transcribe la COLA del segmento abierto (acota CPU)
+
+enroll:                           # calibración de voz validada por ASR (F5.2)
+  similarity: 0.8                 # Levenshtein normalizado mínimo contra la frase pedida
+  max_seconds: 15                 # expiración de seguridad del modo enroll en el servidor
+
+translation:
+  backend: ct2                    # ct2 = CTranslate2 int8 (recomendado). Alternativa sin conversión: transformers
+  model: facebook/nllb-200-distilled-600M   # ⚠️ CC-BY-NC-4.0 (solo uso no comercial)
+  ct2_dir: models/nllb-600m-ct2-int8        # salida de ct2-transformers-converter (~0.6 GB int8)
+  # Con 16 GB cabe facebook/nllb-200-distilled-1.3B (mejor calidad, ~2x latencia):
+  # cambiar model + ct2_dir y reconvertir.
+  device: cuda
+  beam_size: 2                    # compromiso calidad/latencia en CPU (4 = mejor calidad, más lento)
+  max_input_tokens: 256
+  max_output_tokens: 256
+  workers: 2                      # traducciones concurrentes (solo efectivo con backend ct2)
+
+tts:
+  backend: piper                  # F9: librería biométrica + motor ultra-rápido.
+                                  # MEDIDO en el M3: RTF 0.03-0.11 (sub-segundo real).
+                                  # Alternativa 'f5tts': clonación Zero-Shot (modo calidad,
+                                  # ~4-7 s por frase — no simultáneo).
+  workers: 1                      # hilos del executor de TTS
+  chunk_min_chars: 1              # con piper el coste fijo es ~50 ms: cada oración va sola
+                                  # (TTFA mínimo). Con f5tts SUBIR a 60 (coste fijo ~3.1 s).
+  piper:
+    voices_dir: models/piper      # catálogo curado en backend/voice_catalog.py;
+                                  # descarga: bash scripts/setup_voices.sh
+  nfe_step: 8                     # (solo f5tts) pasos de flow matching
+  # El motor elige device solo (MPS fp16 en el M3 > CUDA > CPU) y sintetiza con la HUELLA
+  # VOCAL del hablante capturada en el enroll (client.ref_audio_path + ref_text): no hay
+  # selección de voz. nfe_step=8 fijado en tts_engine.py (compromiso latencia/calidad).
+  # Instalación (una vez): pip install f5-tts
+  # Nota histórica: el backend MeloTTS (F3) queda retirado; su nota de instalación y el
+  # pin transformers==4.27.4 siguen documentados en el DOCUMENTO_MAESTRO por si se revierte.
+
+room:
+  max_speakers: 6
+  require_headphones: true        # política acústica v1: evita el bucle de realimentación (§1.6)
+  table_radius_m: 1.2             # radio del círculo de PannerNodes en el cliente
