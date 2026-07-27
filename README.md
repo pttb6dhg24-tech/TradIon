@@ -10,9 +10,9 @@
   <img src="https://img.shields.io/badge/Seguridad-100%25_Local-orange.svg" alt="100% Local">
 </p>
 
-**TradIon** es un sistema avanzado de traducción de voz bidireccional (Español ↔ Coreano) en tiempo real, 100% local y de coste cero. Diseñado específicamente para reuniones presenciales usando teléfonos móviles conectados a una misma red, sin necesidad de instalar ninguna aplicación.
+**TradIon** es un sistema avanzado de traducción de voz simultánea en tiempo real, 100% local y de coste cero. Diseñado específicamente para reuniones presenciales usando teléfonos móviles conectados a una misma red, permite a múltiples usuarios hablar de forma simultánea en distintos idiomas (**Español, Coreano, Inglés**), sin necesidad de instalar ninguna aplicación.
 
-Desarrollado con una arquitectura moderna de baja latencia, procesa el audio en un servidor central (MacBook Pro o PC con NVIDIA) y lo distribuye a los teléfonos de la mesa, clonando la huella vocal de los hablantes de manera inmediata (Zero-Shot Voice Cloning) y especializando el audio en 3D.
+Desarrollado con una arquitectura moderna de baja latencia, procesa el audio en un servidor central (MacBook Pro o PC con NVIDIA) y lo distribuye a los teléfonos de la mesa. Identifica los distintos idiomas "al vuelo", clona la huella vocal de los hablantes de manera inmediata (Zero-Shot Voice Cloning) y espacializa el audio en 3D.
 
 ---
 
