@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Modelos descargados (pesan GB, nunca al repo)
+models/*
+!models/.gitkeep
+
+# Sistema
+.DS_Store
+
+# Audio temporal
+*.wav
+*.tmp

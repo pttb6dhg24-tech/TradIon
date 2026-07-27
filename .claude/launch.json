@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "frontend-preview",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m", "http.server", "8321",
+        "--directory", "/private/tmp/claude-501/-Users-rodrigo-Documents-TradIon/f62407af-81e7-4b2d-b072-d5f05130c3a3/scratchpad/preview"
+      ],
+      "port": 8321
+    }
+  ]
+}
