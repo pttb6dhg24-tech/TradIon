@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#0b0e14">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>TradIon — La Mesa</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+
+<body>
+
+  <!-- ============ LOBBY ============ -->
+  <section id="lobby" class="screen">
+    <div class="lobby-card">
+      <h1 class="logo">Trad<span>Ion</span></h1>
+      <p class="tagline" data-i18n="tagline">La mesa que traduce sola</p>
+
+      <label class="field">
+        <span data-i18n="name_label">Tu nombre</span>
+        <input id="nameInput" type="text" maxlength="32" data-i18n-placeholder="name_ph" placeholder="Rodrigo"
+          autocomplete="off" autocapitalize="words" enterkeyhint="done">
+      </label>
+
+      <div class="field">
+        <span data-i18n="lang_label">Hablo y quiero escuchar en…</span>
+        <!-- Los nombres de idioma van SIEMPRE en su alfabeto nativo: jamás se traducen -->
+        <div class="langs" id="langPicker" role="radiogroup">
+          <button type="button" class="lang active" data-lang="es" aria-pressed="true">🇪🇸<b>Español</b></button>
+          <button type="button" class="lang" data-lang="ko" aria-pressed="false">🇰🇷<b>한국어</b></button>
+          <button type="button" class="lang" data-lang="en" aria-pressed="false">🇺🇸<b>English</b></button>
+        </div>
+      </div>
+      <!-- Gesto de asiento: un solo tap desbloquea AudioContext + salida AEC + mic + Wake Lock -->
+      <button id="sitBtn" class="sit" data-i18n="sit">🪑 Sentarse en la mesa</button>
+
+      <p class="notice" data-i18n="notice">🎧 Con auriculares se oye mejor · ☀️ La pantalla quedará encendida</p>
+    </div>
+  </section>
+
+  <!-- ============ MESA ============ -->
+  <section id="table" class="screen hidden">
+    <header class="topbar">
+      <div id="status" class="status off">
+        <span class="dot"></span><span id="statusText">Desconectado</span>
+      </div>
+      <div id="meTag" class="me-tag"></div>
+      <button id="leaveBtn" class="leave" data-i18n="leave" data-i18n-title="leave_title">Salir</button>
+    </header>
+
+    <div id="room" class="room" aria-label="room"></div>
+
+    <main id="feed" class="feed" aria-live="polite"></main>
+
+    <!-- Mi voz en directo: VU + transcripción propia (parciales en vivo del servidor) -->
+    <div id="meStrip" class="me-strip">
+      <div class="vu" id="vu"><span></span><span></span><span></span><span></span><span></span></div>
+      <div id="meText" class="me-text" data-i18n="listening">Te escucho…</div>
+    </div>
+
+    <footer class="dock">
+      <button id="planBtn" class="dock-side" data-i18n-title="plan_title">🪑</button>
+      <button id="muteBtn" class="mic muted" aria-pressed="true" data-i18n-title="mute_title">🔇</button>
+      <div id="muteTip" class="mute-tip hidden" data-i18n="mute_tip">🎤 Pulsa para que te escuchen</div>
+      <span class="dock-side dock-ghost"></span>
+    </footer>
+  </section>
+
+  <!-- ============ MODAL: CONFIGURACIÓN DE LA MESA (plano radial 2D) ============ -->
+  <div id="planModal" class="modal hidden">
+    <div class="modal-card">
+      <h2 data-i18n="plan_title">Configuración de la mesa</h2>
+      <p class="modal-hint" data-i18n="plan_hint">Arrastra a cada persona a su sitio real alrededor de la mesa. En la
+        Fase 6, su voz sonará desde esa dirección (audio 3D).</p>
+      <div id="plan" class="plan">
+        <div class="plan-table"></div>
+      </div>
+      <button id="planClose" class="modal-close" data-i18n="plan_done">Listo</button>
+    </div>
+  </div>
+
+  <!-- ============ MODAL: CALIBRACIÓN DE VOZ (enroll multi-paso con ASR) ============ -->
+  <div id="enrollModal" class="modal hidden">
+    <div class="modal-card">
+      <h2 data-i18n="enroll_title">Calibración de voz</h2>
+      <p class="modal-step" id="enrollStep"></p>
+      <p class="modal-hint" id="enrollHint" data-i18n="enroll_hint">Lee esta frase en voz alta y natural:</p>
+      <p class="enroll-prompt" id="enrollPrompt"></p>
+      <button id="enrollStart" class="modal-close" data-i18n="enroll_start">Comenzar a hablar</button>
+      <p id="enrollListening" class="enroll-listening hidden">Te escuchamos…</p>
+    </div>
+  </div>
+
+  <!-- ============ MODAL: ASÍ SONARÁS (voz por idioma destino, tras calibrar) ============ -->
+  <div id="voiceModal" class="modal hidden">
+    <div class="modal-card">
+      <h2 data-i18n="voice_card_title">Así sonarás en la mesa</h2>
+      <p class="modal-hint" data-i18n="voice_card_hint">Tu voz real solo la oyen los de tu idioma. Para el resto, hablarás con estas voces (elegidas según tu tono). Escúchalas y cámbialas si quieres.</p>
+      <div id="voiceList" class="voice-list"></div>
+      <button id="voiceEnter" class="modal-close" data-i18n="voice_enter">Entrar a la mesa</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="alert"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+
+</html>

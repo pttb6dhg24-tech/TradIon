@@ -1,0 +1,36 @@
+# TradIon — dependencias Python (Bloques 1-3)
+# Instalar en venv: python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+
+# --- F1: VAD + STT ---
+numpy>=1.26
+torch>=2.2                 # requerido por silero-vad (CPU en Mac; sin CUDA)
+silero-vad>=5.1            # paquete pip oficial: pesos incluidos, sin torch.hub en runtime
+faster-whisper>=1.1        # STT v1 (CPU int8); mlx-whisper como alternativa a evaluar en F1
+soundfile>=0.12            # lectura/escritura WAV en tests
+
+# --- F2: Traducción ES/KO/EN ---
+ctranslate2>=4.0           # runtime int8 para NLLB (backend Apple Accelerate en ARM64)
+transformers>=4.27         # tokenizador NLLB; el mínimo 4.27 es DELIBERADO: MeloTTS (F3) pina
+                           # transformers==4.27.4 y nuestro código es compatible con ambas ramas
+sentencepiece>=0.2
+huggingface_hub>=0.23      # pip puede degradarlo al instalar MeloTTS; también compatible
+
+# --- F4: Servidor ---
+aiohttp>=3.9               # HTTPS + WebSocket + estáticos del frontend
+PyYAML>=6.0                # lectura de config/settings.yaml
+
+# --- F9: TTS librería biométrica (backend por defecto) ---
+piper-tts>=1.6             # síntesis ONNX ultra-rápida (RTF ~0.1 CPU); voces en models/piper
+                           # (bash scripts/setup_voices.sh). El modo clonación (tts.backend:
+                           # f5tts) requiere además: pip install f5-tts
+
+# --- F3: TTS — MeloTTS se instala aparte (NO añadirlo aquí: su pin de transformers==4.27.4
+#     haría irresoluble este archivo). Tras `pip install -r requirements.txt`, ejecutar:
+#       pip install git+https://github.com/myshell-ai/MeloTTS.git
+#       python -m unidic download
+#       bash scripts/setup_mecab_ko.sh   # coreano: python-mecab-ko AISLADO (ver DOC §7)
+#     ⛔ JAMÁS `pip install python-mecab-ko` a secas: en macOS su paquete 'mecab/' y el
+#     'MeCab/' de mecab-python3 son la misma carpeta (FS insensible a mayúsculas).   # requerido por MeloTTS
+
+# --- Alternativa STT acelerada por GPU de Apple (evaluar en F1) ---
+# mlx-whisper>=0.4
