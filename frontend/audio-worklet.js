@@ -26,7 +26,7 @@ class CaptureProcessor extends AudioWorkletProcessor {
     this._out = new Int16Array(BLOCK_SAMPLES);
     this._outLen = 0;
     this._ducking = 0;
-    this._duckGain = 0.12;   // atenuar, NO silenciar: cero absoluto = medio-dúplex de facto
+    this._duckGain = 0.0;     // Mute absoluto (half-duplex) para evitar que Whisper traduzca el TTS
     this._duckBypass = false; // durante la captura del enroll el ducking se desactiva
     this.port.onmessage = (e) => {
       if (e.data.type === 'duck') {
