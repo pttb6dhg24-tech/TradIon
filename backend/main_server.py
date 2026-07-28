@@ -398,6 +398,9 @@ class TradIonServer:
             "type": "peer_left",
             "speaker_id": client.speaker_id, "name": client.name, "language": client.language,
         })
+        if self.floor_owner == client.speaker_id:
+            self.floor_owner = None
+            self._broadcast({"type": "floor_released", "speaker_id": client.speaker_id})
         logger.info("- %s (%s) — %d en sala", client.name, client.speaker_id, len(self.clients))
 
     # ---------- pipeline de enrutamiento ----------
@@ -671,7 +674,9 @@ class TradIonServer:
                                 safe_data = bytes(len(msg.data))
                             elif self.floor_owner == client.speaker_id:
                                 # Permite que el dueño actual envíe silencios (colas de frase)
-                                self.floor_last_active = now_mono
+                                # ¡OJO! NO actualizamos floor_last_active aquí, para que 
+                                # si el usuario guarda silencio 1.0s, pierda el turno.
+                                pass
 
                         await client.session.feed(safe_data)
                     except AudioFormatError as exc:
