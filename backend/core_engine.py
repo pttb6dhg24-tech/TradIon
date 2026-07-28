@@ -478,14 +478,31 @@ class CoreEngine:
                 condition_on_previous_text=False,
             )
 
-            if (not force_language
-                    and info.language != expected_language
-                    and info.language in self.allowed_languages
-                    and info.language_probability > 0.5):
-                logger.info("LID anti-eco: descartado segmento detectado como '%s' (p=%.2f, "
-                            "esperado '%s')", info.language, info.language_probability,
-                            expected_language)
-                return "", (time.perf_counter() - t0) * 1000.0
+            # FILTRO ANTI-ECO Y ALUCINACIONES (LID)
+            if not force_language and info.language != expected_language:
+                # Si el idioma detectado no es exactamente el del usuario...
+                drop = False
+                
+                # 1. Si es de los idiomas de la sala, es cross-talk asegurado.
+                if info.language in self.allowed_languages:
+                    drop = True
+                else:
+                    # 2. Si es un dialecto o falso positivo común, lo perdonamos.
+                    # Whisper confunde a menudo el español con gallego/catalán/portugués
+                    if expected_language == "es" and info.language in {"ca", "gl", "pt", "it"}:
+                        drop = False
+                    elif expected_language == "en" and info.language in {"cy", "gd", "ga", "nn"}:
+                        drop = False
+                    elif expected_language == "ko" and info.language in {"zh", "ja"}:
+                        drop = False
+                    else:
+                        # 3. Alucinaciones por ruido (ru, fr, etc) que no pintan nada.
+                        drop = True
+                
+                if drop:
+                    logger.info("LID anti-eco: descartado segmento '%s' (p=%.2f, esperado '%s')", 
+                                info.language, info.language_probability, expected_language)
+                    return "", (time.perf_counter() - t0) * 1000.0
 
             valid_texts = []
             dropped: dict[str, int] = {}
