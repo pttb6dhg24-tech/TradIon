@@ -43,15 +43,17 @@
 
   <!-- ============ MESA ============ -->
   <section id="table" class="screen hidden">
-    <header class="topbar">
-      <div id="status" class="status off">
-        <span class="dot"></span><span id="statusText">Desconectado</span>
+    <header class="sticky-header">
+      <div class="topbar">
+        <div id="status" class="status off">
+          <span class="dot"></span><span id="statusText">Desconectado</span>
+        </div>
+        <div id="meTag" class="me-tag"></div>
+        <button id="leaveBtn" class="leave" data-i18n="leave" data-i18n-title="leave_title">Salir</button>
       </div>
-      <div id="meTag" class="me-tag"></div>
-      <button id="leaveBtn" class="leave" data-i18n="leave" data-i18n-title="leave_title">Salir</button>
-    </header>
 
-    <div id="room" class="room" aria-label="room"></div>
+      <div id="room" class="room" aria-label="room"></div>
+    </header>
 
     <main id="feed" class="feed" aria-live="polite"></main>
 
