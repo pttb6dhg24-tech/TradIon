@@ -646,7 +646,9 @@ class TradIonServer:
                                     and peer.last_rms > max_peer_rms):
                                 max_peer_rms = peer.last_rms
 
-                        if max_peer_rms > rms * 1.5 and rms < 0.05:
+                        # Eliminado el límite absoluto de 0.05: si el peer es 1.5x más fuerte,
+                        # es casi seguro que nosotros estamos captando su voz de fondo (crosstalk).
+                        if max_peer_rms > rms * 1.5:
                             safe_data = bytes(len(msg.data))
                         else:
                             safe_data = msg.data
