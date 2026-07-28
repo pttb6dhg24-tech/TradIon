@@ -450,18 +450,23 @@ class CoreEngine:
             await session.close()
             self._vad_pool.append(session._vad)        # reciclar: ya quedó reseteada en close()
 
-    def transcribe_sync(self, audio: np.ndarray, language: str) -> tuple[str, float]:
+    def transcribe_sync(self, audio: np.ndarray, expected_language: str) -> tuple[str, float]:
         """Corre dentro del ThreadPoolExecutor. Acepta ndarray float32 16 kHz en memoria (A3).
-        Anti-hallucination: condition_on_previous_text=False evita cascadas de alucinación
-        cuando audio en otro idioma se cuela por cross-talk."""
+        Usa Auto-Detección de Idioma (LID) para mitigar el eco acústico cruzado (Cross-talk)."""
         t0 = time.perf_counter()
         try:
-            segments, _info = self.whisper.transcribe(
-                audio, language=language, beam_size=self._beam_size,
+            segments, info = self.whisper.transcribe(
+                audio, language=None, beam_size=self._beam_size,
                 condition_on_previous_text=False,
                 vad_filter=True,
                 vad_parameters=dict(min_silence_duration_ms=500),
             )
+            
+            # FILTRO ANTI-ECO (Cross-Talk): Si detectamos que el idioma hablado
+            # no coincide con el del usuario (ej. su micro captó TTS en español de otro móvil),
+            # descartamos el audio automáticamente para romper el bucle.
+            if info.language != expected_language and info.language_probability > 0.5:
+                return "", (time.perf_counter() - t0) * 1000.0
             
             valid_texts = []
             for seg in segments:
@@ -479,7 +484,7 @@ class CoreEngine:
             text = " ".join(valid_texts).strip()
         except Exception as exc:
             raise TranscriptionError(
-                f"STT falló ({language}, {audio.size} muestras): {exc}"
+                f"STT falló ({expected_language}, {audio.size} muestras): {exc}"
             ) from exc
         return text, (time.perf_counter() - t0) * 1000.0
 
