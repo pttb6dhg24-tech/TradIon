@@ -1225,6 +1225,13 @@ function handleMessage(msg) {
       if (!state.enrolled) startEnrollment();   // reconexión a mitad de enroll: reinicia
       break;
     case 'peer_joined':
+      if (state.gracePeriods && state.gracePeriods.has(msg.speaker_id)) {
+        clearTimeout(state.gracePeriods.get(msg.speaker_id));
+        state.gracePeriods.delete(msg.speaker_id);
+        state.room.set(msg.speaker_id, msg);
+        ui.renderRoom();
+        break; // Cancelado el "dejó la mesa", reconexión invisible
+      }
       state.room.set(msg.speaker_id, msg);
       if (msg.x !== undefined) seats.positions.set(msg.speaker_id, { x: msg.x, y: msg.y, angle: msg.angle });
       ui.renderRoom();
@@ -1244,13 +1251,22 @@ function handleMessage(msg) {
       }
       break;
     case 'peer_left':
-      state.room.delete(msg.speaker_id);
-      seats.positions.delete(msg.speaker_id);
-      player?.dropSpeaker(msg.speaker_id);
-      ui._dropLive(msg.speaker_id);
-      ui.latestSeg.delete(msg.speaker_id);
-      ui.renderRoom();
-      ui.sysline(t('sys_left', { name: msg.name }));
+      // Grace period para evitar spam visual en micro-cortes
+      if (!state.gracePeriods) state.gracePeriods = new Map();
+      if (state.gracePeriods.has(msg.speaker_id)) clearTimeout(state.gracePeriods.get(msg.speaker_id));
+      
+      const timer = setTimeout(() => {
+        state.gracePeriods.delete(msg.speaker_id);
+        state.room.delete(msg.speaker_id);
+        seats.positions.delete(msg.speaker_id);
+        player?.dropSpeaker(msg.speaker_id);
+        ui._dropLive(msg.speaker_id);
+        ui.latestSeg.delete(msg.speaker_id);
+        ui.renderRoom();
+        ui.sysline(t('sys_left', { name: msg.name }));
+      }, 10000);
+      
+      state.gracePeriods.set(msg.speaker_id, timer);
       break;
     case 'partial': {
       const seg = msg.segment_id ?? 0;
