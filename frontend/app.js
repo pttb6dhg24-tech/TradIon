@@ -1082,8 +1082,8 @@ const ui = {
     const feed = $('feed');
     // Detect scroll events to know if user scrolled up
     feed.addEventListener('scroll', () => {
-      // Small threshold (50px) to consider "at bottom"
-      const isAtBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 50;
+      // Threshold más alto (150px) para evitar activaciones accidentales
+      const isAtBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 150;
       if (!isAtBottom) {
         this._scrollState.userScrolling = true;
         clearTimeout(this._scrollState.resumeTimer);
@@ -1114,7 +1114,8 @@ const ui = {
   _scrollFeed(force = false) {
     const feed = $('feed');
     if (!force && this._scrollState.userScrolling) return; // Don't interrupt user
-    feed.scrollTo({ top: feed.scrollHeight, behavior: 'smooth' });
+    // Fallback robusto en vez de scrollTo() para máxima compatibilidad
+    feed.scrollTop = feed.scrollHeight;
   },
 };
 
