@@ -1073,10 +1073,48 @@ const ui = {
     }
     this._scrollFeed();
   },
+  _scrollState: {
+    userScrolling: false,
+    resumeTimer: null,
+  },
 
-  _scrollFeed() {
+  _bindScrollEvent() {
     const feed = $('feed');
-    feed.scrollTop = feed.scrollHeight;
+    // Detect scroll events to know if user scrolled up
+    feed.addEventListener('scroll', () => {
+      // Small threshold (50px) to consider "at bottom"
+      const isAtBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 50;
+      if (!isAtBottom) {
+        this._scrollState.userScrolling = true;
+        clearTimeout(this._scrollState.resumeTimer);
+        this._scrollState.resumeTimer = setTimeout(() => {
+          this._scrollState.userScrolling = false;
+          this._scrollFeed(true);
+        }, 15000); // 15 seconds without scrolling = auto resume
+      } else {
+        this._scrollState.userScrolling = false;
+        clearTimeout(this._scrollState.resumeTimer);
+      }
+    });
+    
+    // Also reset the timer if user touches the feed while userScrolling is true
+    const resetTimer = () => {
+      if (this._scrollState.userScrolling) {
+        clearTimeout(this._scrollState.resumeTimer);
+        this._scrollState.resumeTimer = setTimeout(() => {
+          this._scrollState.userScrolling = false;
+          this._scrollFeed(true);
+        }, 15000);
+      }
+    };
+    feed.addEventListener('pointerdown', resetTimer);
+    feed.addEventListener('touchstart', resetTimer, { passive: true });
+  },
+
+  _scrollFeed(force = false) {
+    const feed = $('feed');
+    if (!force && this._scrollState.userScrolling) return; // Don't interrupt user
+    feed.scrollTo({ top: feed.scrollHeight, behavior: 'smooth' });
   },
 };
 
@@ -1506,4 +1544,5 @@ $('nameInput').addEventListener('keydown', (ev) => {
 });
 updateUI();
 ui.setStatus('off');
+ui._bindScrollEvent();
 loadVoiceCatalog();
