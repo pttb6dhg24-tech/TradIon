@@ -388,6 +388,13 @@ class CoreEngine:
             raise ModelLoadError(f"No se pudo cargar Whisper '{stt_cfg['model_size']}': {exc}") from exc
 
         self._beam_size = int(stt_cfg.get("beam_size", 1))
+        # Frases-alucinación típicas de Whisper con ruido/silencio (configurable en YAML,
+        # comparación sin mayúsculas ni signos): último recurso tras no_speech/logprob
+        default_blacklist = ["gracias por ver", "gracias por mirar", "thanks for watching",
+                             "suscríbete", "suscribete", "sign up", "구독"]
+        self._hallucination_blacklist = {
+            str(s).lower() for s in stt_cfg.get("hallucination_blacklist", default_blacklist)
+        }
         self.stt_workers = stt_workers
         self.heavy_pending = 0        # STT finales + validaciones enroll en vuelo/encolados
         self.stt_executor = ThreadPoolExecutor(max_workers=stt_workers, thread_name_prefix="stt")
@@ -450,37 +457,53 @@ class CoreEngine:
             await session.close()
             self._vad_pool.append(session._vad)        # reciclar: ya quedó reseteada en close()
 
-    def transcribe_sync(self, audio: np.ndarray, expected_language: str) -> tuple[str, float]:
+    def transcribe_sync(self, audio: np.ndarray, expected_language: str,
+                        force_language: bool = False) -> tuple[str, float]:
         """Corre dentro del ThreadPoolExecutor. Acepta ndarray float32 16 kHz en memoria (A3).
-        Usa Auto-Detección de Idioma (LID) para mitigar el eco acústico cruzado (Cross-talk)."""
+
+        Anti-eco por LID (auditoría A1): el segmento se descarta SOLO si Whisper detecta
+        OTRO idioma DE LA SALA (cross-talk real: el micro captó el TTS o la voz de otro
+        usuario). Una detección exótica (gallego/catalán/portugués para un hablante de
+        castellano — fallo notorio del LID de Whisper) NO descarta: se transcribe en el
+        idioma esperado. `force_language=True` (calibración, A2) salta el LID por completo:
+        ahí el idioma se conoce con certeza. El doble-VAD interno queda desactivado (A4):
+        el recorte de silencios ya lo hizo el Silero de la sesión. Todos los descartes se
+        LOGUEAN con su causa: nunca más un fallo silencioso indistinguible de 'no habló'."""
         t0 = time.perf_counter()
         try:
             segments, info = self.whisper.transcribe(
-                audio, language=None, beam_size=self._beam_size,
+                audio,
+                language=expected_language if force_language else None,
+                beam_size=self._beam_size,
                 condition_on_previous_text=False,
-                vad_filter=True,
-                vad_parameters=dict(min_silence_duration_ms=500),
             )
-            
-            # FILTRO ANTI-ECO (Cross-Talk): Si detectamos que el idioma hablado
-            # no coincide con el del usuario (ej. su micro captó TTS en español de otro móvil),
-            # descartamos el audio automáticamente para romper el bucle.
-            if info.language != expected_language and info.language_probability > 0.5:
+
+            if (not force_language
+                    and info.language != expected_language
+                    and info.language in self.allowed_languages
+                    and info.language_probability > 0.5):
+                logger.info("LID anti-eco: descartado segmento detectado como '%s' (p=%.2f, "
+                            "esperado '%s')", info.language, info.language_probability,
+                            expected_language)
                 return "", (time.perf_counter() - t0) * 1000.0
-            
+
             valid_texts = []
+            dropped: dict[str, int] = {}
             for seg in segments:
-                # Filtros anti-alucinación robustos (para silencios o ruido blanco)
-                if getattr(seg, 'no_speech_prob', 0.0) > 0.6:
+                seg_text = seg.text.strip()
+                if getattr(seg, "no_speech_prob", 0.0) > 0.6:
+                    dropped["no_speech"] = dropped.get("no_speech", 0) + 1
                     continue
-                if getattr(seg, 'avg_logprob', 0.0) < -1.0:
+                if getattr(seg, "avg_logprob", 0.0) < -1.0:
+                    dropped["logprob"] = dropped.get("logprob", 0) + 1
                     continue
-                # Filtro heurístico contra alucinaciones comunes de YouTube
-                lower_text = seg.text.strip().lower()
-                if lower_text in ["gracias por ver", "gracias por mirar", "thanks for watching", "thanks for watching.", "¡suscríbete!", "suscríbete", "suscribete", "sign up", "sign up!"]:
+                if seg_text.lower().strip("¡!¿?.") in self._hallucination_blacklist:
+                    dropped["blacklist"] = dropped.get("blacklist", 0) + 1
                     continue
-                valid_texts.append(seg.text.strip())
-                
+                valid_texts.append(seg_text)
+            if dropped:
+                logger.info("Filtros STT (%s): descartes %s", expected_language, dropped)
+
             text = " ".join(valid_texts).strip()
         except Exception as exc:
             raise TranscriptionError(

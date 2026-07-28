@@ -290,6 +290,27 @@ SVO↔SOV lo aprende el transformer (atención cruzada), no reglas manuales.
   - **Supresión Eco/Cross-Mic Reforzada:** El umbral RMS/VAD para descartar capturas locales concurrentes con la voz del interlocutor se extendió a 0.8s y se hizo más estricto contra el audio entrante (se evalúa si RMS peer > RMS local × 1.5).
   - **Optimización Whisper:** Aumento de `small` a `medium` en `settings.yaml` dado el excedente de recursos libres tras el despliegue del TTS Piper.
 
+- **2026-07-28 — Resolución completa de la auditoría (plan Fable 5 corregido).**
+  Aplicado TODO: **A1** el LID anti-eco solo descarta si detecta OTRO idioma DE LA
+  SALA (gallego/catalán ya no matan al castellano) y loguea cada descarte; **A2**
+  la calibración fuerza el idioma (`force_language=True`, sin LID); **A3** eliminado
+  el half-duplex espejo del servidor (`tts_playing_until`): la única fuente de verdad
+  es el ducking sample-accurate del cliente (+ cross-mic RMS con timestamp); **A4**
+  `vad_filter=False` (el Silero de sesión ya recorta) + telemetría de descartes por
+  causa (no_speech/logprob/blacklist); **A5** double-checked lock en la carga perezosa
+  de voces Piper y `setdefault` atómico en `voice_by_lang`; **B1** huellas vocales en
+  `models/tmp/` con barrido al arrancar (cero WAVs biométricos huérfanos tras crash);
+  **B2** expiración del enroll por temporizador real (`call_later`), no solo al llegar
+  audio; **C4** métricas honestas (total = stt+mt reales, sin ceros); **C5** código
+  muerto fuera (`voice_pref`, rama enroll inalcanzable, hint "Fase 6"); **C6**
+  blacklist anti-alucinación a YAML. Extras no incluidos en el plan original:
+  `translation.device` des-hardcodeado (la plantilla Windows con `cuda` ahora surte
+  efecto) y README reparado — certificados mkcert CON la IP LAN (antes el "Modo
+  Offline" del propio README generaba certificados inválidos), paso de descarga de
+  voces que faltaba (con comando Windows sin bash), promesas ajustadas a lo medido
+  (1,5-4 s por frase; clonación como modo opcional) y aviso de seguridad del túnel
+  público sin autenticación.
+
 ## 🔗 Fuentes
 
 - Referencia integral: https://github.com/QuentinFuxa/WhisperLiveKit · Topología: https://github.com/niedev/RTranslator

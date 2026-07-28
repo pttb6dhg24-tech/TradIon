@@ -98,9 +98,11 @@ class TextTranslator:
                 f'  HF_HUB_CACHE="{PROJECT_ROOT}/models/hf" ct2-transformers-converter '
                 f"--model {self.model_name} --output_dir {ct2_dir} --quantization int8"
             )
-        # inter_threads: traducciones en paralelo; intra_threads=0: CTranslate2 decide por CPU
+        # inter_threads: traducciones en paralelo; intra_threads=0: CTranslate2 decide por CPU.
+        # device desde el YAML (estaba hardcodeado a cpu): la plantilla Windows/NVIDIA
+        # puede acelerar el MT con device: cuda
         self._ct2 = ctranslate2.Translator(
-            str(ct2_dir), device="cpu",
+            str(ct2_dir), device=str(cfg.get("device", "cpu")),
             inter_threads=int(cfg.get("workers", 2)), intra_threads=0,
         )
 
