@@ -30,8 +30,7 @@ class CaptureProcessor extends AudioWorkletProcessor {
     this._duckBypass = false; // durante la captura del enroll el ducking se desactiva
     this.port.onmessage = (e) => {
       if (e.data.type === 'duck') {
-        this._ducking += e.data.value ? 1 : -1;
-        if (this._ducking < 0) this._ducking = 0;
+        this._ducking = e.data.value ? 1 : 0;
       } else if (e.data.type === 'duck_bypass') {
         this._duckBypass = !!e.data.value;
       }
