@@ -35,13 +35,18 @@ Desarrollado con una arquitectura moderna de baja latencia, procesa el audio en 
 
 ---
 
-## 🛠 Instalación y Configuración
+## 🛠 Instalación y Configuración (Paso a Paso)
 
-El repositorio contiene el cerebro del sistema. Los móviles de los usuarios accederán escaneando un QR o mediante enlace Web, **sin instalar ninguna App.**
+Sigue estos pasos en orden para evitar conflictos. Los móviles de los usuarios accederán escaneando un QR o mediante enlace Web, **sin instalar ninguna App.**
 
-### 1. Preparar el entorno (Mac o Windows)
+### 1. Requisitos Previos (Certificados de Red)
+Los navegadores móviles exigen HTTPS para encender el micrófono. Necesitamos instalar `mkcert` a nivel de sistema operativo para generar candados locales.
+- **Mac:** `brew install mkcert`
+- **Windows:** `winget install mkcert`
+> ⚠️ **Importante:** Tras instalar, cierra la consola y abre una nueva para que tu ordenador reconozca el comando.
 
-Clona este repositorio e instala las dependencias:
+### 2. Clonar y Crear Entorno Virtual
+Para evitar que las pesadas librerías de Inteligencia Artificial interfieran o rompan tu sistema, encapsularemos el proyecto en un entorno virtual (`.venv`).
 
 ```bash
 git clone https://github.com/pttb6dhg24-tech/TradIon.git
@@ -50,18 +55,21 @@ python -m venv .venv
 
 # En Mac (zsh/bash):
 source .venv/bin/activate
-pip install -r requirements.txt
-
 # En Windows (CMD/PowerShell):
 .venv\Scripts\activate
+
 pip install -r requirements.txt
 ```
 
-### 2. Configurar el Hardware (Plantillas)
+### 3. Generar Certificados Locales
+Con tu entorno virtual activo, genera los certificados (se guardarán automáticamente en la carpeta `config/certs/`):
+```bash
+mkcert -install
+mkcert -cert-file config/certs/tradion.pem -key-file config/certs/tradion-key.pem 0.0.0.0 localhost 127.0.0.1 ::1
+```
 
-El sistema soporta chips Apple Silicon (M2/M3) o PCs con GPUs NVIDIA (RTX 3050+). 
+### 4. Configurar el Hardware
 Entra en la carpeta `config/` y **copia** la plantilla de tu sistema, renombrándola a `settings.yaml`:
-
 - **Mac (M2/M3):** Copia `settings.mac.yaml` a `settings.yaml`. *(Usa el modelo `small` por CPU)*
 - **Windows (NVIDIA CUDA):** Copia `settings.windows.yaml` a `settings.yaml`. *(Usa CUDA y el modelo `large-v3-turbo`)*
 
@@ -78,20 +86,10 @@ Entra en la carpeta `config/` y **copia** la plantilla de tu sistema, renombrán
 
 ## 🌐 Conectividad: Modo Offline vs Online
 
-Los navegadores web de los móviles (iOS/Android) **exigen obligatoriamente una conexión segura (HTTPS)** para dar permiso al micrófono. Para resolver esto, TradIon soporta dos topologías de red:
-
 ### A) Modo Offline Absoluto (Local Wi-Fi)
 Puedes llevarte el servidor a medio de la selva sin internet. Solo necesitas un Router Wi-Fi local.
-1. **Instala mkcert** (la herramienta para generar certificados locales):
-   - **Mac:** `brew install mkcert`
-   - **Windows:** `winget install mkcert` (cierra y reabre la consola tras instalar)
-2. **Genera los certificados** (se guardan en `config/certs/`):
-   ```bash
-   mkcert -install
-   mkcert -cert-file config/certs/tradion.pem -key-file config/certs/tradion-key.pem 0.0.0.0 localhost 127.0.0.1 ::1
-   ```
-3. Arranca el servidor: `python -m backend.main_server`
-4. En el móvil, conéctate al WiFi y entra en: `https://<IP-DE-TU-ORDENADOR>:8443`.
+1. Arranca el servidor: `python -m backend.main_server`
+2. En el móvil, conéctate al WiFi y entra en: `https://<IP-DE-TU-ORDENADOR>:8443`.
 *(Cero latencia de red, privacidad extrema).*
 
 ### B) Modo Online (Túneles de Cloudflare)
