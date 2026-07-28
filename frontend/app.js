@@ -673,7 +673,7 @@ class TTSPlayer {
       }
     };
     window.duckCount++;
-    if (window.duckCount > 0 && state.micNodes && state.micNodes.node) {
+    if (window.duckCount === 1 && state.micNodes && state.micNodes.node) {
        state.micNodes.node.port.postMessage({ type: 'duck', value: true });
     }
 
