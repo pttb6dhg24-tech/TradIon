@@ -123,10 +123,17 @@ html, body {
 /* ---------- Mesa ---------- */
 #table { padding-top: var(--safe-top); }
 
+.sticky-header {
+  position: sticky; top: 0; z-index: 999;
+  background-color: color-mix(in srgb, var(--bg) 85%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 4px;
+}
+
 .topbar {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   padding: 12px 16px;
-  position: sticky; top: 0; z-index: 999; background-color: var(--bg);
 }
 
 .status {
@@ -159,9 +166,12 @@ html, body {
 .leave:active { transform: scale(.96); }
 
 .room {
-  display: flex; gap: 10px; flex-wrap: wrap;
-  padding: 4px 16px 10px;
+  display: flex; gap: 10px; flex-wrap: nowrap;
+  overflow-x: auto;
+  padding: 4px 16px 8px;
+  scrollbar-width: none; /* Firefox */
 }
+.room::-webkit-scrollbar { display: none; } /* Chrome/Safari */
 .chip {
   display: flex; align-items: center; gap: 8px;
   background: var(--card);
@@ -169,6 +179,7 @@ html, body {
   border-radius: 999px;
   padding: 6px 12px 6px 6px;
   font-size: .9rem;
+  flex-shrink: 0;
   transition: box-shadow .2s ease;
 }
 .chip .avatar {

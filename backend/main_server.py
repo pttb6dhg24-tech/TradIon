@@ -179,6 +179,7 @@ class TradIonServer:
         self.translator = TextTranslator(self.settings)
         self.tts = TTSEngine(self.settings)
         self.clients: dict[str, Client] = {}
+        self.footprints: dict[str, dict] = {}
         self.max_speakers = int(self.settings.get("room", {}).get("max_speakers", 6))
         self.allowed_languages = set(self.settings["languages"]["allowed"])
         enroll_cfg = self.settings.get("enroll") or {}
@@ -308,6 +309,16 @@ class TradIonServer:
 
         client = Client(speaker_id=speaker_id, name=name, language=language, ws=ws,
                         session=session, token=token, is_enrolled=False)
+        
+        # Restaurar huella vocal si existía (reconexión por micro-corte)
+        if token and token in self.footprints:
+            fp = self.footprints[token]
+            client.ref_audio_buffer = bytearray(fp["buffer"])
+            client.ref_text = fp["text"]
+            client.ref_audio_path = fp["path"]
+            client.user_f0 = fp["f0"]
+            client.voice_by_lang = fp["voices"].copy()
+            client.is_enrolled = True
         loop = asyncio.get_running_loop()
         client.pump_task = loop.create_task(self._pump(client))
         client.writer_task = loop.create_task(self._writer(client))
@@ -319,7 +330,15 @@ class TradIonServer:
             "room": [{"speaker_id": c.speaker_id, "name": c.name, "language": c.language, "x": c.x, "y": c.y, "angle": c.angle}
                      for c in self.clients.values() if getattr(c, 'is_enrolled', False) or c.speaker_id == speaker_id],
         })
-        logger.info("~ %s (%s, %s) — %d en sala (enrolamiento pendiente)", name, language, speaker_id, len(self.clients))
+        
+        if client.is_enrolled:
+            self._broadcast(
+                {"type": "peer_joined", "speaker_id": client.speaker_id, "name": client.name, "language": client.language, "x": client.x, "y": client.y, "angle": client.angle},
+                exclude=client.speaker_id,
+            )
+            logger.info("~ %s (%s, %s) — reconectado con perfil restaurado", name, language, speaker_id)
+        else:
+            logger.info("~ %s (%s, %s) — %d en sala (enrolamiento pendiente)", name, language, speaker_id, len(self.clients))
         return client
 
     async def leave(self, client: Client) -> None:
@@ -352,13 +371,15 @@ class TradIonServer:
             client.writer_task.cancel()
             with suppress(asyncio.CancelledError):
                 await client.writer_task
-        # Privacidad: la huella vocal Zero-Shot muere con la sesión (RAM y disco)
-        client.ref_audio_buffer.clear()
-        client.ref_text = ""
-        if client.ref_audio_path:
-            with suppress(OSError):
-                os.unlink(client.ref_audio_path)
-            client.ref_audio_path = None
+        # Privacidad: la huella vocal muere con la sesión, SALVO que esté en caché
+        # (micro-cortes). Si el usuario pulsó 'Salir', ya se borró de la caché.
+        if client.token not in self.footprints:
+            client.ref_audio_buffer.clear()
+            client.ref_text = ""
+            if client.ref_audio_path:
+                with suppress(OSError):
+                    os.unlink(client.ref_audio_path)
+                client.ref_audio_path = None
         self._broadcast({
             "type": "peer_left",
             "speaker_id": client.speaker_id, "name": client.name, "language": client.language,
@@ -746,6 +767,16 @@ class TradIonServer:
                                 {"type": "peer_joined", "speaker_id": client.speaker_id, "name": client.name, "language": client.language, "x": client.x, "y": client.y, "angle": client.angle},
                                 exclude=client.speaker_id,
                             )
+                            
+                            if client.token:
+                                self.footprints[client.token] = {
+                                    "buffer": bytes(client.ref_audio_buffer),
+                                    "text": client.ref_text,
+                                    "path": client.ref_audio_path,
+                                    "f0": client.user_f0,
+                                    "voices": client.voice_by_lang.copy(),
+                                }
+                            
                             logger.info("+ %s (%s, %s) completó calibración", client.name, client.language, client.speaker_id)
                     elif msg_type == "set_voice" and client is not None:
                         # El usuario elige a mano cómo suena en un idioma destino
@@ -755,6 +786,8 @@ class TradIonServer:
                         profile = catalog.profiles.get(voice_id) if catalog and isinstance(voice_id, str) else None
                         if profile is not None and profile.lang == lang:
                             client.voice_by_lang[lang] = profile
+                            if client.token and client.token in self.footprints:
+                                self.footprints[client.token]["voices"][lang] = profile
                             logger.info("(%s) voz manual para %s: %s",
                                         client.speaker_id, lang, profile.id)
                         else:
@@ -774,6 +807,8 @@ class TradIonServer:
                     elif msg_type == "leave" and client is not None:
                         # Salida limpia solicitada por el cliente: el finally ejecuta
                         # leave() -> purga inmediata de TODO su estado en RAM
+                        if client.token:
+                            self.footprints.pop(client.token, None)
                         break
                     else:
                         await self._ws_send(ws, {"type": "error",
