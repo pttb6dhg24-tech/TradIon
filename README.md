@@ -82,13 +82,16 @@ Los navegadores web de los móviles (iOS/Android) **exigen obligatoriamente una 
 
 ### A) Modo Offline Absoluto (Local Wi-Fi)
 Puedes llevarte el servidor a medio de la selva sin internet. Solo necesitas un Router Wi-Fi local.
-1. Genera los certificados locales (se guardan en `config/certs/`):
+1. **Instala mkcert** (la herramienta para generar certificados locales):
+   - **Mac:** `brew install mkcert`
+   - **Windows:** `winget install mkcert` (cierra y reabre la consola tras instalar)
+2. **Genera los certificados** (se guardan en `config/certs/`):
    ```bash
    mkcert -install
-   mkcert -cert-file config/certs/tradion.pem -key-file config/certs/tradion-key.pem 0.0.0.0 localhost 127.0.0.1
+   mkcert -cert-file config/certs/tradion.pem -key-file config/certs/tradion-key.pem 0.0.0.0 localhost 127.0.0.1 ::1
    ```
-2. Arranca el servidor: `python -m backend.main_server`
-3. En el móvil, conéctate al WiFi y entra en: `https://<IP-DE-TU-ORDENADOR>:8443`.
+3. Arranca el servidor: `python -m backend.main_server`
+4. En el móvil, conéctate al WiFi y entra en: `https://<IP-DE-TU-ORDENADOR>:8443`.
 *(Cero latencia de red, privacidad extrema).*
 
 ### B) Modo Online (Túneles de Cloudflare)
