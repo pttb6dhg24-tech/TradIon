@@ -12,15 +12,15 @@
 
 **TradIon** es un sistema avanzado de traducción de voz simultánea en tiempo real, 100% local y de coste cero. Diseñado específicamente para reuniones presenciales usando teléfonos móviles conectados a una misma red, permite a múltiples usuarios hablar de forma simultánea en distintos idiomas (**Español, Coreano, Inglés**), sin necesidad de instalar ninguna aplicación.
 
-Desarrollado con una arquitectura moderna de baja latencia, procesa el audio en un servidor central (MacBook Pro o PC con NVIDIA) y lo distribuye a los teléfonos de la mesa. Identifica los distintos idiomas "al vuelo", clona la huella vocal de los hablantes de manera inmediata (Zero-Shot Voice Cloning) y espacializa el audio en 3D.
+Desarrollado con una arquitectura moderna de baja latencia, procesa el audio en un servidor central (MacBook Pro o PC con NVIDIA) y lo distribuye a los teléfonos de la mesa. Muestra subtítulos parciales al instante mientras hablas, asigna a cada hablante una voz afín a su tono (análisis de f0 en la calibración) para leer sus traducciones — con clonación Zero-Shot real como modo opcional — y espacializa el audio en 3D.
 
 ---
 
 ## 🚀 Características Principales
 
 - **100% Local y Privado:** Todo el procesamiento (STT, MT, TTS) ocurre en tu máquina. Nada se envía a servidores de terceros ni hay cuotas por uso.
-- **Baja Latencia (Real-Time):** El pipeline está altamente optimizado para traducir en menos de 1 segundo utilizando modelos cuantizados a INT8.
-- **Zero-Shot Voice Cloning:** Clona el tono y las características vocales del usuario con solo un par de frases de calibración, leyendo las traducciones con su propia voz.
+- **Baja Latencia (Real-Time):** subtítulos parciales instantáneos mientras hablas; la voz traducida llega típicamente en **1,5-4 s** tras cerrar la frase (STT+MT+TTS medidos con modelos INT8; la síntesis en sí tarda <150 ms).
+- **Voz afín + Clonación opcional:** en la calibración se analiza tu tono (f0) y se te asigna la voz más parecida del catálogo para cada idioma (puedes escucharlas y cambiarlas). El modo **Zero-Shot Voice Cloning** real (F5-TTS, `tts.backend: f5tts`) clona tu voz con las frases de calibración, a cambio de más latencia (~4-7 s por frase).
 - **Cross-Mic Suppression:** Supresión inteligente del eco y bucles de audio cruzados, vital en entornos donde múltiples micrófonos de móviles están encendidos en la misma mesa.
 - **Audio 3D (Espacial):** Mapeo de la sala en el cliente Web (Web Audio API) que permite escuchar la traducción viniendo físicamente de donde está sentada la otra persona.
 
@@ -62,11 +62,17 @@ pip install -r requirements.txt
 ```
 
 ### 3. Generar Certificados Locales
-Con tu entorno virtual activo, genera los certificados (se guardarán automáticamente en la carpeta `config/certs/`):
+Con tu entorno virtual activo, genera los certificados (se guardarán automáticamente en la carpeta `config/certs/`).
+
+> [!IMPORTANT]
+> **Incluye la IP local de tu ordenador** en el certificado: sin ella, los móviles que entren por WiFi (Modo Offline) verán un certificado inválido y no podrán encender el micrófono. Averíguala con `ipconfig getifaddr en0` (Mac) o `ipconfig` (Windows, campo IPv4).
+
 ```bash
 mkcert -install
-mkcert -cert-file config/certs/tradion.pem -key-file config/certs/tradion-key.pem 0.0.0.0 localhost 127.0.0.1 ::1
+# Sustituye 192.168.1.50 por TU IP local:
+mkcert -cert-file config/certs/tradion.pem -key-file config/certs/tradion-key.pem localhost 127.0.0.1 ::1 192.168.1.50
 ```
+*(Si tu router cambia la IP por DHCP, fija una IP estática o regenera el certificado cuando cambie. Instala además la CA raíz de mkcert en cada móvil: `mkcert -CAROOT` te dice dónde está el `rootCA.pem`.)*
 
 ### 4. Configurar el Hardware
 Entra en la carpeta `config/` y **copia** la plantilla de tu sistema, renombrándola a `settings.yaml`:
@@ -82,8 +88,18 @@ Entra en la carpeta `config/` y **copia** la plantilla de tu sistema, renombrán
 > copy .venv\Lib\site-packages\nvidia\cudnn\bin\*.dll .venv\Scripts\
 > ```
 
-### 5. Arrancar el Servidor
-Una vez instalados los certificados y elegida la configuración de hardware, estás listo para encender el motor de IA.
+### 5. Descargar el Catálogo de Voces (TTS)
+El motor de voz necesita las voces del catálogo en `models/piper/` (sin ellas el servidor no arranca):
+```bash
+# Mac / Linux:
+bash scripts/setup_voices.sh
+
+# Windows (mismo resultado, sin bash):
+python -m piper.download_voices --data-dir models/piper es_ES-davefx-medium es_ES-carlfm-x_low es_ES-sharvard-medium es_MX-claude-high es_MX-ald-medium en_US-amy-medium en_US-ryan-high en_US-lessac-medium en_GB-alan-medium ko_KR-kss-medium
+```
+
+### 6. Arrancar el Servidor
+Una vez instalados los certificados, elegida la configuración y descargadas las voces, estás listo para encender el motor de IA.
 ```bash
 python -m backend.main_server
 ```
@@ -107,6 +123,9 @@ Para usarlo a través de internet móvil (4G/5G) o cuando la red WiFi de la empr
    cloudflared tunnel --url https://localhost:8443 --no-tls-verify
    ```
 3. Pasa a los usuarios el enlace público generado por Cloudflare.
+
+> [!CAUTION]
+> **El enlace del túnel es PÚBLICO y la mesa no tiene autenticación:** cualquiera que consiga la URL puede entrar a la sala, escuchar las traducciones y dejar una muestra de su voz en tu ordenador (se borra al salir o reiniciar, pero existe mientras dura la sesión). Usa el túnel solo para pruebas puntuales con gente de confianza y ciérralo al terminar. Para uso habitual, quédate en el Modo Offline (WiFi local).
 
 ---
 

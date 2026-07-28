@@ -154,7 +154,6 @@ class Client:
     ref_audio_buffer: bytearray = field(default_factory=bytearray)
     ref_text: str = ""
     ref_audio_path: Optional[str] = None
-    voice_pref: str = "auto"                  # F9: 'auto' (matcher f0) o id del catálogo
     user_f0: Optional[float] = None           # f0 mediano medido en el enroll
     voice_by_lang: dict = field(default_factory=dict)  # caché idioma -> VoiceProfile
     pump_task: Optional[asyncio.Task] = None
@@ -164,8 +163,7 @@ class Client:
     )
     seq: int = 0
     last_rms: float = 0.0
-    last_rms_at: float = 0.0
-    tts_playing_until: float = 0.0                  # monotonic: un RMS viejo no puede silenciar a nadie
+    last_rms_at: float = 0.0                  # monotonic: un RMS viejo no puede silenciar a nadie
     is_enrolled: bool = False
     x: float = 0.0
     y: float = 0.0
@@ -189,6 +187,18 @@ class TradIonServer:
         tts_cfg = self.settings.get("tts") or {}
         self.tts_min_chunk = int(tts_cfg.get("chunk_min_chars", 60))
         self._bg_tasks: set[asyncio.Task] = set()
+
+        # B1: las huellas vocales temporales viven en models/tmp (no en el tmp del SO) y
+        # se BARREN al arrancar: un crash jamás deja audio biométrico huérfano en disco
+        self.tmp_dir = PROJECT_ROOT / "models" / "tmp"
+        self.tmp_dir.mkdir(parents=True, exist_ok=True)
+        swept = 0
+        for orphan in self.tmp_dir.glob("huella_*.wav"):
+            with suppress(OSError):
+                orphan.unlink()
+                swept += 1
+        if swept:
+            logger.info("Barrido de arranque: %d huellas vocales huérfanas eliminadas", swept)
 
     # ---------- envío ----------
 
@@ -443,13 +453,15 @@ class TradIonServer:
         client.seq += 1
 
         # 1. Enviar el texto completo de una vez a la UI
+        # Métricas HONESTAS: aquí solo existen STT y MT (la síntesis va después, por
+        # chunks); total = pipeline de texto real, jamás ceros inventados (auditoría C4)
         payload = {
             "type": "translation",
             "speaker_id": client.speaker_id, "name": client.name,
             "source_lang": client.language, "lang": target_lang,
             "original": result.text, "text": translated,
             "latency_ms": {"stt": round(result.stt_ms), "mt": round(mt_ms),
-                           "tts": 0, "total": 0},
+                           "total": round(result.stt_ms + mt_ms)},
         }
         for member in members:
             if member.speaker_id in self.clients:
@@ -473,12 +485,11 @@ class TradIonServer:
                 "source_lang": client.language, "lang": target_lang,
                 "seq": client.seq, "format": "wav",
             }, wav)
-            
-            # Bloquear micros de toda la sala durante la duración del TTS + 0.3s margen
-            duration_s = len(wav) / 88200.0
-            tts_until = time.monotonic() + duration_s + 0.3
+            # El half-duplex vive SOLO en el cliente (ducking del worklet, sample-accurate:
+            # sabe exactamente cuándo suena cada buffer). El bloqueo espejo del servidor
+            # (tts_playing_until) se eliminó: su ventana estimada desde el envío quedaba
+            # desalineada con la cola de reproducción real y comía habla legítima (A3).
             for member in members:
-                member.tts_playing_until = max(member.tts_playing_until, tts_until)
                 self._send_bytes(member, frame_tts)
                 
             logger.info("%s(%s)->%s: stt %.0f + mt %.0f + tts %.0f = %.0f ms | %r",
@@ -548,8 +559,11 @@ class TradIonServer:
             pcm = pcm[: len(pcm) & ~1]   # cliente no conforme: truncar a muestras completas
             audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
             loop = asyncio.get_running_loop()
+            # force_language=True (auditoría A2): en la calibración el idioma se conoce
+            # con certeza — el LID aquí solo servía para romper el enroll con acentos
             heard, _stt_ms = await loop.run_in_executor(
-                self.engine.stt_executor, self.engine.transcribe_sync, audio, client.language
+                self.engine.stt_executor, self.engine.transcribe_sync,
+                audio, client.language, True,
             )
         except Exception:
             logger.exception("(%s) fallo transcribiendo la calibración", client.speaker_id)
@@ -601,12 +615,9 @@ class TradIonServer:
                         client.last_rms = rms
                         client.last_rms_at = now_mono
 
-                        # Cross-Mic Suppression selectivo:
-                        # 1. Si ESTE cliente está reproduciendo un TTS ajeno (tts_playing_until),
-                        #    silenciar SU mic para evitar que el altavoz alimente el STT.
-                        # 2. Si un peer habla más fuerte que yo, silenciar (Winner-Takes-All).
-                        my_tts_playing = client.tts_playing_until > now_mono
-
+                        # Cross-Mic Suppression (Winner-Takes-All): si un peer habla claramente
+                        # más fuerte AHORA MISMO y yo apenas registro señal, mi micro está
+                        # captando SU voz por el aire -> se silencia este chunk
                         max_peer_rms = 0.0
                         for peer in self.clients.values():
                             if (peer.speaker_id != client.speaker_id
@@ -614,9 +625,7 @@ class TradIonServer:
                                     and peer.last_rms > max_peer_rms):
                                 max_peer_rms = peer.last_rms
 
-                        if client.enroll is not None:
-                            safe_data = msg.data
-                        elif my_tts_playing or (max_peer_rms > rms * 1.5 and rms < 0.05):
+                        if max_peer_rms > rms * 1.5 and rms < 0.05:
                             safe_data = bytes(len(msg.data))
                         else:
                             safe_data = msg.data
@@ -658,7 +667,7 @@ class TradIonServer:
                             else:
                                 await client.session.flush()   # cierra lo que hubiera en curso
                                 run = data.get("run")
-                                client.enroll = EnrollState(
+                                enroll_state = EnrollState(
                                     step=int(step) if isinstance(step, (int, float))
                                     and math.isfinite(step) else 0,
                                     expected=expected.strip()[:200],
@@ -666,6 +675,16 @@ class TradIonServer:
                                     run=int(run) if isinstance(run, (int, float))
                                     and math.isfinite(run) else 0,
                                 )
+                                client.enroll = enroll_state
+                                # B2: expiración REAL aunque el cliente deje de enviar audio
+                                # (antes solo se comprobaba al llegar chunks: estado zombi)
+                                def _expire(c=client, st=enroll_state):
+                                    if c.enroll is st:
+                                        c.enroll = None
+                                        logger.info("(%s) enroll expirado por temporizador",
+                                                    c.speaker_id)
+                                asyncio.get_running_loop().call_later(
+                                    self.enroll_max_s + 1.0, _expire)
                         elif action in ("cancel", "stop"):
                             client.enroll = None
                         else:
@@ -711,8 +730,9 @@ class TradIonServer:
                                 def _dump_wav():
                                     import tempfile
                                     import soundfile as sf
-                                    import numpy as np
-                                    fd, path = tempfile.mkstemp(suffix=".wav")
+                                    # B1: en models/tmp (barrida al arrancar), no en el tmp del SO
+                                    fd, path = tempfile.mkstemp(
+                                        prefix="huella_", suffix=".wav", dir=str(self.tmp_dir))
                                     os.close(fd)
                                     audio_np = np.frombuffer(client.ref_audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
                                     sf.write(path, audio_np, 16000, format="WAV")

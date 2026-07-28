@@ -125,6 +125,7 @@ class VoiceCatalog:
         self._f0_cache_path = self.voices_dir / "voice_f0_cache.json"
         self._voices: dict[str, Any] = {}      # onnx filename -> PiperVoice
         self._locks: dict[str, threading.Lock] = {}
+        self._load_lock = threading.Lock()     # A5: carga perezosa segura con tts.workers > 1
         self._f0: dict[str, float] = {}
         self.profiles: dict[str, VoiceProfile] = {}
         for profile in CATALOG:
@@ -143,11 +144,16 @@ class VoiceCatalog:
     def _voice_for(self, profile: VoiceProfile):
         voice = self._voices.get(profile.onnx)
         if voice is None:
-            from piper import PiperVoice  # import tardío: opcional si backend=f5tts
-            voice = PiperVoice.load(str(self.voices_dir / profile.onnx))
-            self._voices[profile.onnx] = voice
-            self._locks[profile.onnx] = threading.Lock()
-            logger.info("Voz Piper cargada: %s", profile.onnx)
+            # Double-checked locking: dos hilos del executor de TTS no deben cargar
+            # el mismo ONNX a la vez (corrupción/doble RAM) — auditoría A5
+            with self._load_lock:
+                voice = self._voices.get(profile.onnx)
+                if voice is None:
+                    from piper import PiperVoice  # import tardío: opcional si backend=f5tts
+                    voice = PiperVoice.load(str(self.voices_dir / profile.onnx))
+                    self._locks[profile.onnx] = threading.Lock()
+                    self._voices[profile.onnx] = voice
+                    logger.info("Voz Piper cargada: %s", profile.onnx)
         return voice
 
     def synthesize_pcm(self, profile: VoiceProfile, text: str) -> tuple[np.ndarray, int]:

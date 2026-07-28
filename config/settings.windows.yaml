@@ -36,6 +36,14 @@ stt:
   beam_size: 1                    # greedy: prioridad latencia (auditoría A4)
   workers: 2                      # transcripciones concurrentes (hablantes simultáneos)
   cpu_threads: 4                  # hilos de CTranslate2 por transcripción
+  hallucination_blacklist:        # frases-alucinación de Whisper descartadas (sin mayúsculas/signos)
+    - gracias por ver
+    - gracias por mirar
+    - thanks for watching
+    - suscríbete
+    - suscribete
+    - sign up
+    - 구독
   partials:                       # transcripción parcial en vivo (ventana deslizante, F5.2)
     enabled: true
     model_size: tiny             # modelo DEDICADO a parciales (+~0.9 GB RAM): jamás compiten

@@ -74,26 +74,20 @@ class PiperBackend:
                     ", ".join(sorted(self.catalog.profiles)))
 
     def _profile_for(self, lang: str, client: Any) -> Any:
+        # Prioridad: (1) voz fijada para ese idioma (asignación del enroll o set_voice
+        # manual, ya en voice_by_lang), (2) matcher por el f0 del usuario, (3) defecto
         cached = getattr(client, "voice_by_lang", None)
         if cached is not None and lang in cached:
             return cached[lang]
-        profile = None
-        anchor_f0: Optional[float] = None
-        if client is not None:
-            pref = getattr(client, "voice_pref", "auto")
-            if pref != "auto" and pref in self.catalog.profiles:
-                chosen = self.catalog.profiles[pref]
-                anchor_f0 = self.catalog.f0_of(pref)
-                if chosen.lang == lang:
-                    profile = chosen           # el idioma pedido ES el de la voz elegida
-            if anchor_f0 is None:
-                anchor_f0 = getattr(client, "user_f0", None)
-        if profile is None:
-            profile = self.catalog.match_by_f0(anchor_f0, lang) or self.catalog.default_for(lang)
+        anchor_f0 = getattr(client, "user_f0", None) if client is not None else None
+        profile = self.catalog.match_by_f0(anchor_f0, lang) or self.catalog.default_for(lang)
         if profile is None:
             raise TTSError(f"El catálogo no tiene voces para el idioma '{lang}'")
         if cached is not None:
-            cached[lang] = profile
+            # setdefault atómico (A5): este código corre en el hilo del executor de TTS
+            # mientras el event loop puede escribir la misma clave vía set_voice; si el
+            # loop ya la puso, gana la elección explícita del usuario
+            profile = cached.setdefault(lang, profile)
         return profile
 
     def synthesize_sync(self, text: str, lang: str, client: Any = None) -> bytes:
