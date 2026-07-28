@@ -415,9 +415,29 @@ class LinearResampler {
   }
 }
 
+let micBuffer = [];
+const MAX_MIC_BUFFER_CHUNKS = 8; // Aprox 400ms retenidos en secreto
+
 function _onMicBlock(arrayBuffer) {
   ui.setLevel(_rmsOfInt16(arrayBuffer));
-  if (micGateOpen()) net.sendBinary(arrayBuffer);
+  
+  const open = micGateOpen();
+  
+  // Queremos hablar (no estamos muteados) pero el sistema de Turno nos bloquea
+  const blockedByFloor = !open && !state.muted && state.joined && net && net.floorOwner && net.floorOwner !== state.speakerId;
+  
+  if (open) {
+    if (micBuffer.length > 0) {
+      for (const buf of micBuffer) net.sendBinary(buf);
+      micBuffer = [];
+    }
+    net.sendBinary(arrayBuffer);
+  } else if (blockedByFloor) {
+    micBuffer.push(arrayBuffer);
+    if (micBuffer.length > MAX_MIC_BUFFER_CHUNKS) micBuffer.shift();
+  } else {
+    micBuffer = [];
+  }
 }
 
 function _rmsOfInt16(arrayBuffer) {
