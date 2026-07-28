@@ -283,6 +283,11 @@ function micGateOpen() {
   if (enrollUi.active && enrollUi.capturing) return true;
   if (state.muted) return false;
   if (enrollUi.active && !enrollUi.capturing) return false;
+  
+  // CSMA/CA Floor Token: Si otra persona tiene el turno, nuestro micrófono se silencia.
+  // Esto elimina de raíz el eco y el crosstalk captado por móviles cercanos.
+  if (net && net.floorOwner && net.floorOwner !== state.speakerId) return false;
+
   return true;
 }
 
@@ -301,6 +306,7 @@ class WSClient {
     this._joined = false;
     this._fatalMsg = null;
     this._prejoinFails = 0;
+    this.floorOwner = null;
   }
 
   connect() {
@@ -847,6 +853,26 @@ const ui = {
     $('lobby').classList.add('hidden');
     $('table').classList.remove('hidden');
     $('meTag').textContent = `${FLAGS[state.lang]} ${state.name}`;
+    this.updateFloorUI();
+  },
+
+  updateFloorUI() {
+    if (!state.seated) return;
+    const meTag = $('meTag');
+    if (net.floorOwner) {
+      if (net.floorOwner === state.speakerId) {
+        meTag.style.boxShadow = '0 0 10px #4ade80';
+        meTag.style.borderColor = '#4ade80';
+      } else {
+        meTag.style.boxShadow = 'none';
+        meTag.style.borderColor = '#444';
+        // También podríamos resaltar al que tiene el floor en su asiento (renderRoom)
+      }
+    } else {
+      meTag.style.boxShadow = 'none';
+      meTag.style.borderColor = '#444';
+    }
+    this.renderRoom();
   },
 
   showLobby() {
@@ -1292,6 +1318,14 @@ function handleMessage(msg) {
       break;
     case 'enroll_result':
       handleEnrollResult(msg);
+      break;
+    case 'floor_acquired':
+      net.floorOwner = msg.speaker_id;
+      ui.updateFloorUI();
+      break;
+    case 'floor_released':
+      net.floorOwner = null;
+      ui.updateFloorUI();
       break;
     case 'voice_assigned':
       renderVoiceCard(msg.voices || {});
