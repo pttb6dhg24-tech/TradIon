@@ -188,6 +188,8 @@ class TradIonServer:
         tts_cfg = self.settings.get("tts") or {}
         self.tts_min_chunk = int(tts_cfg.get("chunk_min_chars", 60))
         self._bg_tasks: set[asyncio.Task] = set()
+        self.floor_owner: Optional[str] = None
+        self.floor_last_active: float = 0.0
 
         # B1: las huellas vocales temporales viven en models/tmp (no en el tmp del SO) y
         # se BARREN al arrancar: un crash jamás deja audio biométrico huérfano en disco
@@ -626,32 +628,38 @@ class TradIonServer:
                         self._feed_enroll(client, msg.data)
                         continue
                     try:
-                        # Filtro de dominancia RMS (Cross-Mic Suppression).
-                        # CRÍTICO: solo comparar contra RMS RECIENTES (<0.5 s) — un peer que
-                        # deja de emitir (enroll, mute, ducking) dejaba su last_rms alto
-                        # congelado y silenciaba al otro dispositivo indefinidamente.
+                        # Protocolo CSMA/CA (Floor Token) con latencia acústica.
+                        # En lugar de comparar RMS relativos (que el AGC de los móviles anula),
+                        # otorgamos el "turno" de forma estricta (First-In First-Out) al primero
+                        # que supere el umbral de ruido (0.025). La velocidad del sonido asegura
+                        # que el hablante original enviará su paquete ~4ms antes que los "ecos".
+                        
                         now_mono = time.monotonic()
                         audio_np = np.frombuffer(msg.data, dtype=np.int16).astype(np.float32) / 32768.0
                         rms = float(np.sqrt(np.mean(audio_np**2))) if audio_np.size else 0.0
                         client.last_rms = rms
                         client.last_rms_at = now_mono
 
-                        # Cross-Mic Suppression (Winner-Takes-All): si un peer habla claramente
-                        # más fuerte AHORA MISMO y yo apenas registro señal, mi micro está
-                        # captando SU voz por el aire -> se silencia este chunk
-                        max_peer_rms = 0.0
-                        for peer in self.clients.values():
-                            if (peer.speaker_id != client.speaker_id
-                                    and now_mono - peer.last_rms_at < 0.8
-                                    and peer.last_rms > max_peer_rms):
-                                max_peer_rms = peer.last_rms
+                        safe_data = msg.data
 
-                        # Eliminado el límite absoluto de 0.05: si el peer es 1.5x más fuerte,
-                        # es casi seguro que nosotros estamos captando su voz de fondo (crosstalk).
-                        if max_peer_rms > rms * 1.5:
-                            safe_data = bytes(len(msg.data))
+                        if rms > 0.025:
+                            if self.floor_owner is None or self.floor_owner == client.speaker_id:
+                                # Toma del canal o mantenimiento del mismo
+                                if self.floor_owner is None:
+                                    self.floor_owner = client.speaker_id
+                                    self._broadcast({"type": "floor_acquired", "speaker_id": client.speaker_id})
+                                    logger.info("El canal (Turno) ha sido tomado por %s", client.speaker_id)
+                                self.floor_last_active = now_mono
+                            else:
+                                # Canal ocupado por otro: descartar este audio inmediatamente (crosstalk)
+                                safe_data = bytes(len(msg.data))
                         else:
-                            safe_data = msg.data
+                            # Si no hay voz fuerte, y el canal es de otro, también lo silenciamos por si acaso
+                            if self.floor_owner is not None and self.floor_owner != client.speaker_id:
+                                safe_data = bytes(len(msg.data))
+                            elif self.floor_owner == client.speaker_id:
+                                # Permite que el dueño actual envíe silencios (colas de frase)
+                                self.floor_last_active = now_mono
 
                         await client.session.feed(safe_data)
                     except AudioFormatError as exc:
@@ -853,6 +861,17 @@ async def _api_voice_preview(request: web.Request) -> web.StreamResponse:
         raise web.HTTPNotFound(text="Voz desconocida")
     return web.FileResponse(path, headers={"Cache-Control": "max-age=3600"})
 
+    async def _floor_manager(self) -> None:
+        """Tarea de fondo para liberar el turno de palabra tras inactividad (CSMA/CA)."""
+        while True:
+            await asyncio.sleep(0.1)
+            if self.floor_owner is not None:
+                # 1.0s de inactividad de volumen es suficiente para liberar el canal
+                if time.monotonic() - self.floor_last_active > 1.0:
+                    old_owner = self.floor_owner
+                    self.floor_owner = None
+                    self._broadcast({"type": "floor_released", "speaker_id": old_owner})
+                    logger.info("El canal se ha liberado (expiró el turno de %s)", old_owner)
 
 def build_app(server: TradIonServer) -> web.Application:
     app = web.Application()
@@ -865,16 +884,24 @@ def build_app(server: TradIonServer) -> web.Application:
     if FRONTEND_DIR.is_dir():
         app.router.add_static("/static", FRONTEND_DIR)
 
+    async def _on_startup(_app: web.Application) -> None:
+        task = asyncio.create_task(server._floor_manager())
+        server._bg_tasks.add(task)
+        task.add_done_callback(server._bg_tasks.discard)
+
     async def _on_shutdown(_app: web.Application) -> None:
         # aiohttp NO cierra los websockets al apagar: sin esto, cada Ctrl-C con clientes
         # conectados espera el shutdown_timeout completo (doc oficial: graceful shutdown)
         for client in list(server.clients.values()):
             await server.leave(client)
             await server._close_ws(client.ws, b"Server shutdown")
+        for task in list(server._bg_tasks):
+            task.cancel()
         server.engine.shutdown()
         server.translator.shutdown()
         server.tts.shutdown()
 
+    app.on_startup.append(_on_startup)
     app.on_shutdown.append(_on_shutdown)
     return app
 
