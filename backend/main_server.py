@@ -263,6 +263,18 @@ class TradIonServer:
             except (ConnectionResetError, RuntimeError):
                 return  # socket muerto: el finally de su handler hará leave()
 
+    async def _floor_manager(self) -> None:
+        """Tarea de fondo para liberar el turno de palabra tras inactividad (CSMA/CA)."""
+        while True:
+            await asyncio.sleep(0.1)
+            if self.floor_owner is not None:
+                # 1.0s de inactividad de volumen es suficiente para liberar el canal
+                if time.monotonic() - self.floor_last_active > 1.0:
+                    old_owner = self.floor_owner
+                    self.floor_owner = None
+                    self._broadcast({"type": "floor_released", "speaker_id": old_owner})
+                    logger.info("El canal se ha liberado (expiró el turno de %s)", old_owner)
+
     @staticmethod
     def _tts_frame(header: dict, wav: bytes) -> bytes:
         head = _dumps(header).encode("utf-8")
@@ -861,17 +873,7 @@ async def _api_voice_preview(request: web.Request) -> web.StreamResponse:
         raise web.HTTPNotFound(text="Voz desconocida")
     return web.FileResponse(path, headers={"Cache-Control": "max-age=3600"})
 
-    async def _floor_manager(self) -> None:
-        """Tarea de fondo para liberar el turno de palabra tras inactividad (CSMA/CA)."""
-        while True:
-            await asyncio.sleep(0.1)
-            if self.floor_owner is not None:
-                # 1.0s de inactividad de volumen es suficiente para liberar el canal
-                if time.monotonic() - self.floor_last_active > 1.0:
-                    old_owner = self.floor_owner
-                    self.floor_owner = None
-                    self._broadcast({"type": "floor_released", "speaker_id": old_owner})
-                    logger.info("El canal se ha liberado (expiró el turno de %s)", old_owner)
+
 
 def build_app(server: TradIonServer) -> web.Application:
     app = web.Application()
