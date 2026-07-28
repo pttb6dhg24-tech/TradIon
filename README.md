@@ -82,6 +82,13 @@ Entra en la carpeta `config/` y **copia** la plantilla de tu sistema, renombrán
 > copy .venv\Lib\site-packages\nvidia\cudnn\bin\*.dll .venv\Scripts\
 > ```
 
+### 5. Arrancar el Servidor
+Una vez instalados los certificados y elegida la configuración de hardware, estás listo para encender el motor de IA.
+```bash
+python -m backend.main_server
+```
+*(La primera vez tardará varios minutos en descargar los modelos de IA y guardarlos en la carpeta `models/`).*
+
 ---
 
 ## 🌐 Conectividad: Modo Offline vs Online
