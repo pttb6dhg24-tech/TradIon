@@ -268,8 +268,8 @@ class TradIonServer:
         while True:
             await asyncio.sleep(0.1)
             if self.floor_owner is not None:
-                # 1.0s de inactividad de volumen es suficiente para liberar el canal
-                if time.monotonic() - self.floor_last_active > 1.0:
+                # 0.4s de inactividad de volumen es el punto dulce para liberar el canal rápidamente
+                if time.monotonic() - self.floor_last_active > 0.4:
                     old_owner = self.floor_owner
                     self.floor_owner = None
                     self._broadcast({"type": "floor_released", "speaker_id": old_owner})
