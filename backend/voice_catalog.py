@@ -156,6 +156,12 @@ class VoiceCatalog:
                     logger.info("Voz Piper cargada: %s", profile.onnx)
         return voice
 
+    def preload(self, profile: VoiceProfile) -> None:
+        """Carga el ONNX de una voz si aún no está en RAM (pre-calentamiento tras el
+        enroll). La carga perezosa costaba 2-4 s EN MEDIO de la primera frase de la
+        mesa (medido en la Victus: 'Voz Piper cargada' + TTS 4009 ms vs 76 ms después)."""
+        self._voice_for(profile)
+
     def synthesize_pcm(self, profile: VoiceProfile, text: str) -> tuple[np.ndarray, int]:
         """PCM float32 + sample_rate. Lock por modelo (sesiones onnxruntime compartidas)."""
         from piper.config import SynthesisConfig

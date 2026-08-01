@@ -197,6 +197,30 @@ class TTSEngine:
         self._executor = ThreadPoolExecutor(
             max_workers=int(cfg.get("workers", 1)), thread_name_prefix="tts"
         )
+        # Executor PROPIO para el prewarm: si compartiera el único worker de síntesis,
+        # un enroll a mitad de conversación encolaría 1-2 cargas de ONNX (2-4 s cada
+        # una) POR DELANTE del siguiente chunk de un hablante activo (head-of-line).
+        # El double-checked locking de _voice_for hace segura la carga concurrente.
+        self._prewarm_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="tts-warm"
+        )
+
+    def prewarm_voices(self, client: Any) -> None:
+        """Encola la carga de los ONNX ya asignados a un cliente (tras el enroll /
+        set_voice / reconexión) en el executor de prewarm. No bloquea el event loop
+        ni retrasa la síntesis en vivo de otros hablantes."""
+        catalog = self.catalog
+        if catalog is None:                      # backend f5tts: no hay voces que cargar
+            return
+        for profile in list(getattr(client, "voice_by_lang", {}).values()):
+            self._prewarm_executor.submit(self._prewarm_one, catalog, profile)
+
+    @staticmethod
+    def _prewarm_one(catalog: Any, profile: Any) -> None:
+        try:
+            catalog.preload(profile)
+        except Exception:                        # el prewarm jamás tumba nada: solo avisa
+            logger.exception("Prewarm de la voz '%s' falló", getattr(profile, "id", "?"))
 
     @property
     def catalog(self):
@@ -215,6 +239,7 @@ class TTSEngine:
     def shutdown(self) -> None:
         self.backend.shutdown()
         self._executor.shutdown(wait=False)
+        self._prewarm_executor.shutdown(wait=False)
 
 
 # ---------- smoke test ----------

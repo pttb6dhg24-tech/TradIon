@@ -335,8 +335,26 @@ class TradIonServer:
             return None
 
         speaker_id = uuid.uuid4().hex[:8]
+        seq_start = 0
+        if token and token in self.footprints:
+            # Reutilizar el speaker_id del MISMO dispositivo: el grace period del
+            # cliente está indexado por speaker_id — con un id nuevo en cada
+            # reconexión, la "reconexión invisible" jamás casaba y toda la mesa veía
+            # 'A dejó la mesa' + 'A se unió' en cada micro-corte (p. ej. del túnel).
+            # Con id estable también sobreviven el panner 3D y la atribución de
+            # subtítulos del cliente.
+            prev_id = self.footprints[token].get("speaker_id")
+            if isinstance(prev_id, str) and prev_id and prev_id not in self.clients:
+                speaker_id = prev_id
+            # Contador de segment_id MONÓTONO entre sesiones: si se reinicia a 1,
+            # los clientes (que ordenan por segment_id y guardan el máximo visto)
+            # descartarían décadas de parciales del reconectado hasta alcanzarlo.
+            # +64 de holgura: los finales drenados por el leave del socket viejo
+            # pueden difundirse DESPUÉS de crear esta sesión.
+            seq_start = int(self.footprints[token].get("last_seg", 0)) + 64
         try:
-            session = await self.engine.create_session(speaker_id, language)
+            session = await self.engine.create_session(speaker_id, language,
+                                                       seq_start=seq_start)
         except EngineError as exc:
             await self._ws_send(ws, {"type": "error", "message": str(exc)})
             await ws.close()
@@ -376,6 +394,8 @@ class TradIonServer:
             # reaparece donde estaba, no en la plaza hexagonal por defecto)
             if "x" in fp:
                 client.x, client.y, client.angle = fp["x"], fp["y"], fp["angle"]
+            # Sus voces ya están decididas: cargar los ONNX de fondo desde ya
+            self.tts.prewarm_voices(client)
         loop = asyncio.get_running_loop()
         client.pump_task = loop.create_task(self._pump(client))
         client.writer_task = loop.create_task(self._writer(client))
@@ -411,8 +431,12 @@ class TradIonServer:
         La RAM del cliente (buffers de audio, colas, sesión) queda sin referencias -> GC;
         la instancia de VAD vuelve al pool del motor.
         """
-        if self.clients.pop(client.speaker_id, None) is None:
+        # Pop CONDICIONAL: solo si la entrada del mapa es ESTA instancia. Con el
+        # speaker_id estable, un leave tardío del socket viejo no debe extraer (ni
+        # matar la sesión de) el socket NUEVO que ya reutilizó el mismo id.
+        if self.clients.get(client.speaker_id) is not client:
             return
+        del self.clients[client.speaker_id]
         try:
             await self.engine.drop_session(client.speaker_id)
         except Exception:
@@ -440,6 +464,15 @@ class TradIonServer:
                 with suppress(OSError):
                     os.unlink(client.ref_audio_path)
                 client.ref_audio_path = None
+        if self.clients.get(client.speaker_id) is not None:
+            # El mismo dispositivo ya se RE-registró con su id estable mientras este
+            # leave esperaba (drop_session + drenaje del pump, hasta ~15 s): anunciar
+            # peer_left ahora llegaría DESPUÉS de su peer_joined, el grace de 10 s del
+            # cliente expiraría sin cancelación y dropSpeaker() silenciaría su TTS en
+            # toda la mesa PARA SIEMPRE. Un id vivo no se entierra; su floor tampoco.
+            logger.info("~ %s (%s) reconectó durante su salida: peer_left suprimido",
+                        client.name, client.speaker_id)
+            return
         self._broadcast({
             "type": "peer_left",
             "speaker_id": client.speaker_id, "name": client.name, "language": client.language,
@@ -468,6 +501,12 @@ class TradIonServer:
                                  client.speaker_id, result.segment_id)
 
     async def _handle_result(self, client: Client, result: TranscriptionResult) -> None:
+        # Registrar el segment_id más alto difundido: la próxima sesión de este
+        # dispositivo arranca su contador por encima (monotonía entre reconexiones)
+        if result.segment_id and client.token:
+            fp = self.footprints.get(client.token)
+            if fp is not None and result.segment_id > fp.get("last_seg", 0):
+                fp["last_seg"] = result.segment_id
         if result.partial:
             # Hipótesis en vivo del segmento ABIERTO: solo UI. La traducción espera al
             # final (la gramática SOV del coreano se rompe traduciendo prefijos, §1)
@@ -589,10 +628,16 @@ class TradIonServer:
         También deduplica trozos adyacentes idénticos (NLLB a veces duplica:
         '- Gracias. - Gracias.' se sintetizaba dos veces)."""
         raw_parts = [s.strip() for s in self._SENTENCE_SPLIT.split(text) if s.strip()]
-        # dedup de oraciones adyacentes ANTES de fusionar (NLLB duplica a veces)
+        # dedup de oraciones adyacentes ANTES de fusionar (NLLB duplica a veces).
+        # Comparación NORMALIZADA sin guion de DIÁLOGO (guion + espacio): '- Thank
+        # you.' y 'Thank you.' son el mismo duplicado (en la Victus sonaban AMBOS).
+        # Ojo: solo guion seguido de espacio — '-5 grados.' es un número negativo
+        # legítimo y no debe colapsar con '5 grados.'
+        def _norm(s: str) -> str:
+            return re.sub(r"^[-–—]\s+", "", s).strip()
         parts: list[str] = []
         for part in raw_parts:
-            if not parts or parts[-1] != part:
+            if not parts or _norm(parts[-1]) != _norm(part):
                 parts.append(part)
         if not parts:
             return [text]
@@ -830,6 +875,10 @@ class TradIonServer:
                                     "voices": assigned_map,
                                     "user_f0": client.user_f0,
                                 })
+                                # Pre-calentar los ONNX asignados AHORA, en el executor
+                                # de TTS: la carga perezosa costaba 2-4 s en mitad de la
+                                # PRIMERA frase de la mesa (medido en la Victus)
+                                self.tts.prewarm_voices(client)
 
                             # Volcar huella vocal de RAM a WAV temporal asincrónicamente (MPS Optimizaciones)
                             if client.ref_audio_buffer:
@@ -861,6 +910,8 @@ class TradIonServer:
                                     "f0": client.user_f0,
                                     "voices": client.voice_by_lang.copy(),
                                     "x": client.x, "y": client.y, "angle": client.angle,
+                                    "speaker_id": client.speaker_id,   # identidad estable por dispositivo
+                                    "last_seg": 0,   # segment_id más alto difundido (monotonía)
                                 }
                             
                             logger.info("+ %s (%s, %s) completó calibración", client.name, client.language, client.speaker_id)
@@ -874,6 +925,7 @@ class TradIonServer:
                             client.voice_by_lang[lang] = profile
                             if client.token and client.token in self.footprints:
                                 self.footprints[client.token]["voices"][lang] = profile
+                            self.tts.prewarm_voices(client)   # que la nueva voz no pague carga en mesa
                             logger.info("(%s) voz manual para %s: %s",
                                         client.speaker_id, lang, profile.id)
                         else:
@@ -1006,7 +1058,7 @@ def _build_ssl_context(settings: dict[str, Any]) -> ssl.SSLContext:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     settings = load_settings()
-    logger.info("Cargando motores (Whisper + NLLB + F5-TTS)... puede tardar en el primer arranque")
+    logger.info("Cargando motores (Whisper + NLLB + TTS)... puede tardar en el primer arranque")
     server = TradIonServer(settings)
     app = build_app(server)
     ssl_context = _build_ssl_context(settings)

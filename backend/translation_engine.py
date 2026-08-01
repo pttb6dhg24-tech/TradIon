@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -55,7 +56,14 @@ class TextTranslator:
 
         hf_cache = resolve_dir(Path(self.settings["paths"]["models_dir"]) / "hf")
         from transformers import AutoTokenizer  # import tardío: acelera arrancar sin este motor
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, cache_dir=str(hf_cache))
+        try:
+            # Primero SIN red: tras el primer arranque todo está en models/hf. Esto
+            # elimina ~8 peticiones a huggingface.co en cada boot (vistas en el log de
+            # la Victus) y permite arrancar el servidor SIN internet en la sala.
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.model_name, cache_dir=str(hf_cache), local_files_only=True)
+        except Exception:
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, cache_dir=str(hf_cache))
 
         # Un código FLORES mal escrito en el YAML mapearía a <unk> y produciría traducciones
         # corruptas SIN error (convert_tokens_to_ids no lanza): validar contra el vocabulario ya
@@ -122,6 +130,14 @@ class TextTranslator:
 
     # ---------- API ----------
 
+    # Guion de diálogo al inicio ('- ', '– ', '— ') y separador de turnos tras el
+    # cierre de una oración ('...? - No.'): un em-dash de aposición en mitad de frase
+    # ('Me gusta — mucho — el plan') NUNCA sigue a un signo de cierre, no se toca.
+    _DIALOG_DASH = re.compile(r"^\s*[-–—]\s+")
+    _TURN_SPLIT = re.compile(r"\n+|(?<=[.!?…])\s+(?=[-–—]\s)")
+    _TURN_DASH = re.compile(r"(?<=[.!?…])\s+[-–—]\s+")
+    _SENT_SPLIT = re.compile(r"(?<=[.!?…])\s+")
+
     def translate(self, text: str, src_lang: str, tgt_lang: str) -> str:
         """Síncrona (tests y scripts). En el servidor usa translate_async()."""
         text = text.strip()
@@ -129,8 +145,33 @@ class TextTranslator:
             return ""
         src_code, tgt_code = self._resolve_pair(src_lang, tgt_lang)
         if self.backend == "ct2":
-            return self._translate_ct2(text, src_code, tgt_code)
-        return self._translate_transformers(text, src_code, tgt_code)
+            out = self._translate_ct2(text, src_code, tgt_code)
+        else:
+            out = self._translate_transformers(text, src_code, tgt_code)
+        return self._strip_invented_dialog(text, out)
+
+    def _strip_invented_dialog(self, source: str, translated: str) -> str:
+        """NLLB aprendió el formato de subtítulos de su corpus y con frases cortas a
+        veces (a) antepone un guion de diálogo y (b) INVENTA un segundo turno entero:
+        'What did you say?' -> '- ¿Qué dijiste? - No.' — ese '- No.' no lo dijo nadie
+        y el TTS lo pronunciaba en la mesa. Solo si la fuente tiene UNA oración (y sin
+        guion propio) se recorta al primer turno: con fuente MULTI-oración la salida
+        multi-turno es contenido REAL en formato subtítulo ('Gracias. Hasta mañana.'
+        -> '- Thank you. - See you tomorrow.') y recortar destruiría la segunda
+        oración — ahí solo se limpian los guiones. Cada recorte queda logueado."""
+        if (not translated or self._DIALOG_DASH.match(source)
+                or not self._DIALOG_DASH.match(translated)):
+            return translated
+        stripped = self._DIALOG_DASH.sub("", translated, count=1)
+        src_sentences = [s for s in self._SENT_SPLIT.split(source.strip()) if s.strip()]
+        if len(src_sentences) > 1:
+            cleaned = self._TURN_DASH.sub(" ", stripped).strip()
+            return cleaned or translated
+        first = self._TURN_SPLIT.split(stripped, maxsplit=1)[0].strip()
+        if first != translated:
+            logger.info("MT: formato de diálogo inventado recortado: %r -> %r",
+                        translated, first)
+        return first or translated
 
     async def translate_async(self, text: str, src_lang: str, tgt_lang: str) -> str:
         """No bloquea el event loop: corre en el pool del traductor (C2)."""
@@ -172,7 +213,17 @@ class TextTranslator:
                 [tokens],
                 target_prefix=[[tgt_code]],
                 beam_size=self._beam_size,
-                max_decoding_length=self._max_output_tokens,
+                # Defensas del "standard setting" de NLLB-600M (benchmark HalOmi,
+                # arxiv 2305.11746): tope de longitud RELATIVO a la entrada
+                # (3·len+5) — la palanca directa contra la sobre-generación con
+                # locuciones cortas ('What did you say?' -> turno de diálogo
+                # inventado '- No.'), que no es una repetición y a la que
+                # no_repeat_ngram_size no llega — más bloqueo de 3-gramas
+                # repetidos ('Thank you. Thank you.') y sin token <unk>.
+                max_decoding_length=min(self._max_output_tokens,
+                                        3 * len(tokens) + 5),
+                no_repeat_ngram_size=3,
+                disable_unk=True,
             )
         except Exception as exc:
             raise TranslationError(f"CTranslate2 falló ({src_code}->{tgt_code}): {exc}") from exc

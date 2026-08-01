@@ -118,7 +118,8 @@ class VoiceSession:
     cerrado termina de transcribirse. Crear sesiones vía CoreEngine.create_session().
     """
 
-    def __init__(self, engine: "CoreEngine", speaker_id: str, language: str, vad_model: Any) -> None:
+    def __init__(self, engine: "CoreEngine", speaker_id: str, language: str, vad_model: Any,
+                 seq_start: int = 0) -> None:
         audio_cfg = engine.settings["audio"]
         self.engine = engine
         self.speaker_id = speaker_id
@@ -155,7 +156,7 @@ class VoiceSession:
         self._speech_ms = 0.0                # solo ventanas con voz: filtro min_speech_ms
         self._segment_ms = 0.0               # duración TOTAL del segmento: tope duro real
         self._silence_ms = 0.0
-        self._segment_seq = 0
+        self._segment_seq = int(seq_start)   # monótono ENTRE sesiones del mismo speaker_id
         self._stt_tasks: set[asyncio.Task] = set()
         self._prev_stt: Optional[asyncio.Task] = None
         self._closed = False
@@ -373,17 +374,24 @@ class CoreEngine:
         stt_workers = int(stt_cfg.get("workers", 2))
 
         whisper_dir = resolve_dir(Path(self.settings["paths"]["models_dir"]) / "whisper")
+        whisper_kwargs = dict(
+            device=stt_cfg.get("device", "cpu"),
+            compute_type=stt_cfg.get("compute_type", "int8"),
+            cpu_threads=int(stt_cfg.get("cpu_threads", 4)),
+            # num_workers=1 serializaría las llamadas concurrentes dentro de CTranslate2:
+            # debe ir sincronizado con el tamaño del executor para paralelismo real
+            num_workers=stt_workers,
+            download_root=str(whisper_dir),        # pesos a models/, nunca ~/.cache (M1)
+        )
         try:
-            self.whisper = WhisperModel(
-                stt_cfg["model_size"],
-                device=stt_cfg.get("device", "cpu"),
-                compute_type=stt_cfg.get("compute_type", "int8"),
-                cpu_threads=int(stt_cfg.get("cpu_threads", 4)),
-                # num_workers=1 serializaría las llamadas concurrentes dentro de CTranslate2:
-                # debe ir sincronizado con el tamaño del executor para paralelismo real
-                num_workers=stt_workers,
-                download_root=str(whisper_dir),        # pesos a models/, nunca ~/.cache (M1)
-            )
+            try:
+                # Primero SIN red: tras el primer arranque los pesos ya están en
+                # models/whisper — esto evita las peticiones a huggingface.co en cada
+                # boot y permite arrancar el servidor SIN internet en la sala
+                self.whisper = WhisperModel(stt_cfg["model_size"],
+                                            local_files_only=True, **whisper_kwargs)
+            except Exception:
+                self.whisper = WhisperModel(stt_cfg["model_size"], **whisper_kwargs)
         except Exception as exc:
             raise ModelLoadError(f"No se pudo cargar Whisper '{stt_cfg['model_size']}': {exc}") from exc
 
@@ -409,19 +417,23 @@ class CoreEngine:
         self.partial_executor: Optional[ThreadPoolExecutor] = None
         if bool(partial_cfg.get("enabled", True)):
             partial_size = str(partial_cfg.get("model_size", "small"))
+            partial_kwargs = dict(
+                # Los parciales van a CPU SALVO opt-in explícito en partials.device:
+                # si heredaran stt.device=cuda, las hipótesis desechables competirían
+                # con los finales por la GPU y sumarían ~0.3 GB de VRAM. Ojo: el
+                # compute_type tampoco se hereda (int8_float16 no existe en CPU).
+                device=str(partial_cfg.get("device", "cpu")),
+                compute_type=str(partial_cfg.get("compute_type", "int8")),
+                cpu_threads=int(partial_cfg.get("cpu_threads", 2)),
+                num_workers=1,
+                download_root=str(whisper_dir),
+            )
             try:
-                self.partial_whisper = WhisperModel(
-                    partial_size,
-                    # Los parciales van a CPU SALVO opt-in explícito en partials.device:
-                    # si heredaran stt.device=cuda, las hipótesis desechables competirían
-                    # con los finales por la GPU y sumarían ~0.3 GB de VRAM. Ojo: el
-                    # compute_type tampoco se hereda (int8_float16 no existe en CPU).
-                    device=str(partial_cfg.get("device", "cpu")),
-                    compute_type=str(partial_cfg.get("compute_type", "int8")),
-                    cpu_threads=int(partial_cfg.get("cpu_threads", 2)),
-                    num_workers=1,
-                    download_root=str(whisper_dir),
-                )
+                try:
+                    self.partial_whisper = WhisperModel(partial_size,
+                                                        local_files_only=True, **partial_kwargs)
+                except Exception:
+                    self.partial_whisper = WhisperModel(partial_size, **partial_kwargs)
                 self.partial_executor = ThreadPoolExecutor(
                     max_workers=1, thread_name_prefix="stt-partial"
                 )
@@ -439,7 +451,12 @@ class CoreEngine:
                     stt_cfg["model_size"], stt_cfg.get("compute_type", "int8"),
                     self._beam_size, stt_workers, sorted(self.allowed_languages), whisper_dir)
 
-    async def create_session(self, speaker_id: str, language: str) -> VoiceSession:
+    async def create_session(self, speaker_id: str, language: str,
+                             seq_start: int = 0) -> VoiceSession:
+        """`seq_start` arranca el contador de segment_id por encima del de la sesión
+        anterior del MISMO speaker_id (reconexión con id estable): los clientes
+        ordenan parciales/finales por segment_id y un contador que se reinicia a 1
+        haría que descartaran todo lo nuevo hasta superar el máximo anterior."""
         if language not in self.allowed_languages:     # idioma SIEMPRE explícito y validado (A2)
             raise EngineError(
                 f"Idioma '{language}' no permitido; configura uno de {sorted(self.allowed_languages)}"
@@ -451,7 +468,15 @@ class CoreEngine:
         else:  # sala llena por encima de lo previsto: cargar sin bloquear el loop
             loop = asyncio.get_running_loop()
             vad_model = await loop.run_in_executor(self.vad_executor, load_silero_vad)
-        session = VoiceSession(self, speaker_id, language, vad_model)
+            if speaker_id in self._sessions:
+                # Carrera TOCTOU: otro create_session del MISMO id ganó durante el
+                # await (reconexión duplicada del mismo token). Sin este re-check,
+                # _sessions[id] se sobreescribía: la sesión pisada jamás se cerraba
+                # y su VAD salía del pool PARA SIEMPRE (fuga acumulativa).
+                self._vad_pool.append(vad_model)
+                raise EngineError(f"Ya existe una sesión para '{speaker_id}'")
+        session = VoiceSession(self, speaker_id, language, vad_model,
+                               seq_start=int(seq_start))
         self._sessions[speaker_id] = session
         return session
 
