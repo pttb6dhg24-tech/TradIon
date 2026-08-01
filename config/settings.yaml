@@ -89,6 +89,12 @@ tts:
   # pin transformers==4.27.4 siguen documentados en el DOCUMENTO_MAESTRO por si se revierte.
 
 room:
+  floor:                          # turno de palabra CSMA/CA (anti-crosstalk en mesa física)
+    acquire_rms: 0.025            # voz franca necesaria para TOMAR el canal
+    hold_rms: 0.012               # histéresis: MANTENERLO es más barato (finales suaves de frase)
+    release_ms: 400               # silencio que libera el turno
+    max_hold_s: 30                # tope duro anti-inanición (ruido de fondo permanente)
+    reacquire_cooldown_s: 2       # cuarentena tras expulsión por max_hold_s (si no, re-toma el canal en el siguiente frame)
   max_speakers: 6
   require_headphones: true        # política acústica v1: evita el bucle de realimentación (§1.6)
   table_radius_m: 1.2             # radio del círculo de PannerNodes en el cliente

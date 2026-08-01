@@ -29,13 +29,21 @@ audio:
   segment_close_silence_ms: 400   # silencio que cierra un segmento (rango útil: 300-800)
   segment_max_seconds: 15         # tope duro por segmento
 
+# ============ PRESUPUESTO VRAM (RTX 3070, 8 GB) — no tocar sin recalcular ============
+# whisper large-v3-turbo int8_float16 ~1.5 GB + NLLB-600M int8 ~1.0 GB + contexto CUDA
+# ~0.6 GB = ~3.1 GB con backend piper (TTS en CPU, 0 VRAM). Margen: ~5 GB.
+# Si activas tts.backend f5tts (fp16 CUDA): +~3 GB -> ~6.1 GB, aún dentro de 8 GB
+# pero SIN subir stt.workers ni translation.workers. Parciales SIEMPRE en CPU.
 stt:
-  device: cuda                     # faster-whisper/CTranslate2 no usa Metal: en Mac siempre cpu
-  model_size: large-v3-turbo              # M3/16GB: medium int8 (~1.2 GB). Mínima latencia: small. Máxima calidad: large-v3-turbo
-  compute_type: int8
+  device: cuda
+  model_size: large-v3-turbo      # 809M; en 3070 va sobrado (~0.3-0.5s por segmento)
+  compute_type: int8_float16      # pesos int8 + cómputo fp16: en GPU es MÁS RÁPIDO que
+                                  # int8 puro y usa menos VRAM que float16 completo
   beam_size: 1                    # greedy: prioridad latencia (auditoría A4)
-  workers: 2                      # transcripciones concurrentes (hablantes simultáneos)
-  cpu_threads: 4                  # hilos de CTranslate2 por transcripción
+  workers: 2                      # 2 streams CUDA concurrentes cubren 3-4 hablantes
+                                  # (la GPU procesa cada segmento en <0.5s; no subir sin
+                                  # recalcular VRAM de activaciones)
+  cpu_threads: 4                  # solo se usa si device=cpu
   hallucination_blacklist:        # frases-alucinación de Whisper descartadas (sin mayúsculas/signos)
     - gracias por ver
     - gracias por mirar
@@ -46,8 +54,11 @@ stt:
     - 구독
   partials:                       # transcripción parcial en vivo (ventana deslizante, F5.2)
     enabled: true
-    model_size: tiny             # modelo DEDICADO a parciales (+~0.9 GB RAM): jamás compiten
-                                  # con los finales/enroll del modelo principal por el executor
+    model_size: tiny
+    device: cpu                   # los parciales se quedan en CPU A PROPÓSITO: ahorran
+                                  # ~0.3 GB de VRAM y jamás compiten con los finales por
+                                  # la GPU (tiny en CPU: RTF ~0.15, sobra para hipótesis)
+    compute_type: int8            # int8 puro: int8_float16 no existe en CPU
     cpu_threads: 2                # hilos del modelo de parciales
     interval_ms: 1200             # mínimo entre pasadas parciales por hablante
     min_speech_ms: 800            # voz acumulada antes de la primera pasada parcial
@@ -64,7 +75,9 @@ translation:
   # Con 16 GB cabe facebook/nllb-200-distilled-1.3B (mejor calidad, ~2x latencia):
   # cambiar model + ct2_dir y reconvertir.
   device: cuda
-  beam_size: 2                    # compromiso calidad/latencia en CPU (4 = mejor calidad, más lento)
+  compute_type: auto              # 'auto' en CUDA resuelve a int8_float16 (kernels fp16);
+                                  # sin esta clave CT2 caía a int8_float32 (más lento, más VRAM)
+  beam_size: 2                    # compromiso calidad/latencia en GPU (4 = mejor calidad, más lento)
   max_input_tokens: 256
   max_output_tokens: 256
   workers: 2                      # traducciones concurrentes (solo efectivo con backend ct2)
@@ -89,6 +102,12 @@ tts:
   # pin transformers==4.27.4 siguen documentados en el DOCUMENTO_MAESTRO por si se revierte.
 
 room:
+  floor:                          # turno de palabra CSMA/CA (anti-crosstalk en mesa física)
+    acquire_rms: 0.025            # voz franca necesaria para TOMAR el canal
+    hold_rms: 0.012               # histéresis: MANTENERLO es más barato (finales suaves de frase)
+    release_ms: 400               # silencio que libera el turno
+    max_hold_s: 30                # tope duro anti-inanición (ruido de fondo permanente)
+    reacquire_cooldown_s: 2       # cuarentena tras expulsión por max_hold_s (si no, re-toma el canal en el siguiente frame)
   max_speakers: 6
   require_headphones: true        # política acústica v1: evita el bucle de realimentación (§1.6)
   table_radius_m: 1.2             # radio del círculo de PannerNodes en el cliente

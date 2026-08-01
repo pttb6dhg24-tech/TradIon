@@ -415,27 +415,47 @@ class LinearResampler {
   }
 }
 
-let micBuffer = [];
-const MAX_MIC_BUFFER_CHUNKS = 8; // Aprox 400ms retenidos en secreto
+let micBuffer = [];   // entradas {buf, t}: onset retenido mientras el floor nos bloquea
+// 4 bloques de 2048 muestras @16 kHz = 512 ms de "onset" retenido (el diseño pide ~400 ms;
+// el comentario anterior decía 400 ms con 8 bloques, que en realidad eran ~1 s)
+const MAX_MIC_BUFFER_CHUNKS = 4;
+// Alineado con floor.acquire_rms del servidor (0.025) + margen por el RMS diezmado del
+// cliente: un onset retenido que NO pueda adquirir el canal solo genera frases partidas
+const MIC_BUFFER_MIN_RMS = 0.028;
+const MIC_BUFFER_MAX_AGE_MS = 700;  // voz más vieja que esto ya no es un "onset": se tira
+
+function _pruneMicBuffer() {
+  const now = performance.now();
+  micBuffer = micBuffer.filter((e) => now - e.t < MIC_BUFFER_MAX_AGE_MS);
+}
 
 function _onMicBlock(arrayBuffer) {
-  ui.setLevel(_rmsOfInt16(arrayBuffer));
-  
+  const rms = _rmsOfInt16(arrayBuffer);
+  ui.setLevel(rms);
+
   const open = micGateOpen();
-  
+
   // Queremos hablar (no estamos muteados) pero el sistema de Turno nos bloquea
   const blockedByFloor = !open && !state.muted && state.joined && net && net.floorOwner && net.floorOwner !== state.speakerId;
-  
+
   if (open) {
     if (micBuffer.length > 0) {
-      for (const buf of micBuffer) net.sendBinary(buf);
+      // Volcar SOLO onsets frescos: sin la poda por edad, hablar 0.5s durante el turno
+      // ajeno dejaba voz retenida que, al liberarse el canal 60s después, ADQUIRÍA el
+      // floor para alguien que ya estaba callado (frase fantasma + turno robado)
+      _pruneMicBuffer();
+      for (const entry of micBuffer) net.sendBinary(entry.buf);
       micBuffer = [];
     }
     net.sendBinary(arrayBuffer);
-  } else if (blockedByFloor) {
-    micBuffer.push(arrayBuffer);
+  } else if (blockedByFloor && rms > MIC_BUFFER_MIN_RMS) {
+    // Retener solo bloques con voz clara: el ring buffer guardaba TAMBIÉN el eco del
+    // que tenía el turno (justo el audio que el floor quería descartar) y lo
+    // reproducía en nuestra sesión al liberarse el canal -> subtítulos duplicados
+    micBuffer.push({ buf: arrayBuffer, t: performance.now() });
+    _pruneMicBuffer();
     if (micBuffer.length > MAX_MIC_BUFFER_CHUNKS) micBuffer.shift();
-  } else {
+  } else if (!blockedByFloor) {
     micBuffer = [];
   }
 }
@@ -597,12 +617,31 @@ class EchoSafeOutput {
       };
     });
     for (const track of stream.getTracks()) pc1.addTrack(track, stream);
+    // CRÍTICO PARA EL 3D: el HRTF produce audio BINAURAL ESTÉREO, pero Opus en WebRTC
+    // negocia MONO por defecto — el loopback aplastaba los dos canales y destruía la
+    // espacialización en Android. RFC 7587: el fmtp es declarativo del RECEPTOR, así
+    // que basta stereo=1 en la descripción REMOTA de pc1 (la answer); se munge anclado
+    // a la línea a=fmtp del payload real de Opus (no a un literal frágil) y SOLO en
+    // las descripciones remotas (las locales quedan intactas: sin SDP munging local).
+    const forceStereo = (sdp) => {
+      const rtpmap = sdp.match(/^a=rtpmap:(\d+) opus\/48000\/2/mi);
+      if (!rtpmap) return sdp;
+      const pt = rtpmap[1];
+      const fmtpLine = new RegExp(`^a=fmtp:${pt} [^\\r\\n]*`, 'mi');
+      if (fmtpLine.test(sdp)) {
+        return sdp.replace(fmtpLine, (line) => /stereo=/i.test(line)
+          ? line.replace(/stereo=\d/i, 'stereo=1')
+          : `${line};stereo=1;sprop-stereo=1`);
+      }
+      return sdp.replace(new RegExp(`^(a=rtpmap:${pt} [^\\r\\n]*)`, 'mi'),
+                         `$1\r\na=fmtp:${pt} stereo=1;sprop-stereo=1`);
+    };
     const offer = await pc1.createOffer();
     await pc1.setLocalDescription(offer);
-    await pc2.setRemoteDescription(offer);
+    await pc2.setRemoteDescription({ type: 'offer', sdp: forceStereo(offer.sdp) });
     const answer = await pc2.createAnswer();
     await pc2.setLocalDescription(answer);
-    await pc1.setRemoteDescription(answer);
+    await pc1.setRemoteDescription({ type: 'answer', sdp: forceStereo(answer.sdp) });
     await connected;
     if (!remote) throw new Error('loopback sin ontrack');
     return remote;
@@ -641,6 +680,7 @@ class TTSPlayer {
     this.gains = new Map();      // speaker_id -> GainNode (gancho para PannerNode en F6)
     this.panners = new Map();    // speaker_id -> PannerNode (F6)
     this._tail = new Map();      // speaker_id -> Promise (orden de LLEGADA garantizado)
+    this._dropped = new Set();   // peers expulsados: sus TTS tardíos se descartan
   }
 
   _gainFor(speakerId) {
@@ -649,22 +689,28 @@ class TTSPlayer {
       g = this.ctx.createGain();
       const panner = this.ctx.createPanner();
       panner.panningModel = 'HRTF';
-      
+
+      // SIN conos direccionales: apuntaban al CENTRO de la mesa, pero el oyente está
+      // en el BORDE — para los asientos vecinos quedaba fuera del cono (coneOuterGain
+      // 0.2 = -14 dB arbitrarios) y ese vaivén de volumen enmascaraba por completo la
+      // direccionalidad del HRTF. En una mesa, las fuentes deben ser omnidireccionales:
+      // la dirección la da la geometría oyente-fuente, no la "boca" de la fuente.
+
+      // Modelo de distancia SUAVE: con los defaults (inverse, rolloff=1) el comensal de
+      // enfrente (~7 m virtuales) sonaba 5x más bajo que el de al lado. rolloff 0.35
+      // mantiene una pista sutil de cercanía sin destrozar la inteligibilidad.
+      panner.distanceModel = 'inverse';
+      panner.refDistance = 2;
+      panner.rolloffFactor = 0.35;
+      // (sin maxDistance: en el modelo 'inverse' se ignora — solo aplica a 'linear')
+
       const pos = seats.ensure(speakerId);
-      panner.positionX.value = pos.x * 5;
+      panner.positionX.value = pos.x * SPATIAL_SCALE;
       panner.positionY.value = 0;
-      panner.positionZ.value = pos.y * 5;
+      panner.positionZ.value = pos.y * SPATIAL_SCALE;
 
-      panner.orientationX.value = Math.cos(pos.angle);
-      panner.orientationY.value = 0;
-      panner.orientationZ.value = Math.sin(pos.angle);
-
-      panner.coneInnerAngle = 60;
-      panner.coneOuterAngle = 120;
-      panner.coneOuterGain = 0.2;
-      
       this.panners.set(speakerId, panner);
-      
+
       g.connect(panner);
       panner.connect(this.output.input);
       this.gains.set(speakerId, g);
@@ -673,8 +719,15 @@ class TTSPlayer {
   }
 
   play(header, wavBuffer) {
+    // Un TTS tardío de un peer ya expulsado NO debe resucitar su gain+panner vía
+    // _gainFor (sonaría un "fantasma" en posición arbitraria y esos nodos HRTF
+    // no se limpiarían jamás: peer_left no se re-emite para ese speaker_id)
+    if (this._dropped.has(header.speaker_id)) return;
     const prev = this._tail.get(header.speaker_id) || Promise.resolve();
-    const next = prev.then(() => this._decodeAndSchedule(header, wavBuffer));
+    const next = prev.then(() => {
+      if (this._dropped.has(header.speaker_id)) return;
+      return this._decodeAndSchedule(header, wavBuffer);
+    });
     this._tail.set(header.speaker_id, next.catch(() => {}));
   }
 
@@ -707,7 +760,14 @@ class TTSPlayer {
     this.nextStart.set(header.speaker_id, start + audioBuf.duration + 0.05);
   }
 
+  /** Levanta el veto de dropSpeaker: el client_token persiste en localStorage, así que
+   *  quien sale y vuelve REUTILIZA su speaker_id — sin esto quedaría mudo para siempre. */
+  restoreSpeaker(speakerId) {
+    this._dropped.delete(speakerId);
+  }
+
   dropSpeaker(speakerId) {
+    this._dropped.add(speakerId);
     this.gains.get(speakerId)?.disconnect();
     this.gains.delete(speakerId);
     this.panners.get(speakerId)?.disconnect();
@@ -715,6 +775,28 @@ class TTSPlayer {
     this.nextStart.delete(speakerId);
     this._tail.delete(speakerId);
   }
+}
+
+/** Escala mundo: [-1,1] del plano -> metros WebAudio. */
+const SPATIAL_SCALE = 5;
+const SPATIAL_TAU = 0.08;   // setTargetAtTime: ~63% del recorrido en 80 ms
+
+/** Mueve un AudioParam SIN saltos: asignar .value en pleno arrastre produce el
+ * "zipper"/clicks que hacían sentir el 3D tosco. */
+function _glide(param, value, ctx) {
+  param.setTargetAtTime(value, ctx.currentTime, SPATIAL_TAU);
+}
+
+/** Recoloca el panner de un hablante (suavizado). Omnidireccional: sin orientación.
+ * OJO: usa el binding léxico `player`, NO window.player — con script clásico, un
+ * `let` global no crea propiedad de window: window.player era SIEMPRE undefined y
+ * el reposicionamiento de panners fue un no-op desde el primer día (por eso el 3D
+ * "no seguía" a los avatares: cada fuente quedaba clavada donde nació). */
+function positionPanner(speakerId, pos) {
+  const p = player?.panners?.get(speakerId);
+  if (!p || !state.audioCtx) return;
+  _glide(p.positionX, pos.x * SPATIAL_SCALE, state.audioCtx);
+  _glide(p.positionZ, pos.y * SPATIAL_SCALE, state.audioCtx);
 }
 
 /** F6-fix: el OYENTE debe estar en SU asiento mirando hacia donde mira su avatar.
@@ -725,18 +807,31 @@ function updateListener() {
   const pos = seats.positions.get(state.speakerId);
   if (!pos) return;
   const listener = state.audioCtx.listener;
-  const x = pos.x * 5, z = pos.y * 5;
+  const x = pos.x * SPATIAL_SCALE, z = pos.y * SPATIAL_SCALE;
   const fx = Math.cos(pos.angle), fz = Math.sin(pos.angle);
   if (listener.positionX) {
-    listener.positionX.value = x;
+    // "Primera vez" ligada AL CONTEXTO: el flag debe renacer con cada AudioContext
+    // (al re-sentarse hay contexto nuevo; un flag global haría glide desde el origen)
+    const first = updateListener._ctx !== state.audioCtx;
+    updateListener._ctx = state.audioCtx;
+    if (first) {
+      // Primera colocación: SNAP (glide desde el origen sería un 'vuelo' de 400 ms)
+      listener.positionX.value = x;
+      listener.positionZ.value = z;
+    } else {
+      _glide(listener.positionX, x, state.audioCtx);
+      _glide(listener.positionZ, z, state.audioCtx);
+    }
     listener.positionY.value = 0;
-    listener.positionZ.value = z;
+    // La ORIENTACIÓN se fija en seco, jamás se interpola: el lerp componente a
+    // componente de un vector dirección pasa por (0,0,0) en giros de 180° — vector
+    // forward inválido según la spec de Web Audio (comportamiento indefinido/NaN)
     listener.forwardX.value = fx;
     listener.forwardY.value = 0;
     listener.forwardZ.value = fz;
     listener.upX.value = 0; listener.upY.value = 1; listener.upZ.value = 0;
   } else {
-    // Safari con API antigua de AudioListener
+    // Safari con API antigua de AudioListener (sin AudioParams: sin suavizado posible)
     listener.setPosition(x, 0, z);
     listener.setOrientation(fx, 0, fz, 0, 1, 0);
   }
@@ -827,13 +922,8 @@ const seats = {
         const label = seat.querySelector('.seat-name');
         if (label) label.style.transform = `rotate(${-(faceAngle + Math.PI/2)}rad)`;
 
-        if (window.player && window.player.panners && window.player.panners.has(seat.dataset.id)) {
-          const p = window.player.panners.get(seat.dataset.id);
-          p.positionX.value = x * 5;
-          p.positionZ.value = y * 5;
-          p.orientationX.value = Math.cos(faceAngle);
-          p.orientationZ.value = Math.sin(faceAngle);
-        }
+        positionPanner(seat.dataset.id, { x, y });   // suavizado: sin zipper al arrastrar
+        if (seat.dataset.id === state.speakerId) updateListener();  // el oyente sigue mi dedo
       };
       const up = () => {
         seat.classList.remove('dragging');
@@ -1170,6 +1260,19 @@ function setDuckBypass(value) {
   state.micNodes?.node?.port.postMessage({ type: 'duck_bypass', value });
 }
 
+/**
+ * Única fuente de verdad del bypass. El bypass aplica si:
+ *  - estoy capturando una frase de enroll (un TTS ajeno no puede silenciar mi calibración), o
+ *  - TENGO el turno de palabra: con ducking full-mute, un TTS rezagado de otro idioma
+ *    sonando en MI móvil silenciaba mi propio micro >400 ms y el servidor me quitaba
+ *    el floor a mitad de frase. Quien posee el canal habla por encima del TTS.
+ * Llamar SIEMPRE a esta función (no a setDuckBypass) al cambiar enroll o floor.
+ */
+function refreshDuckBypass() {
+  const ownFloor = !!(state.speakerId && net && net.floorOwner === state.speakerId);
+  setDuckBypass(enrollUi.capturing || ownFloor);
+}
+
 /* ============ Calibración de voz multi-paso validada por ASR ============ */
 
 let enrollRun = 0;
@@ -1213,13 +1316,13 @@ function beginEnrollCapture() {
     step: enrollUi.step, expected: t(`enroll_phrase_${enrollUi.step}`),
   });
   enrollUi.capturing = true;
-  setDuckBypass(true);   // un TTS ajeno sonando NO puede silenciar mi calibración
+  refreshDuckBypass();   // un TTS ajeno sonando NO puede silenciar mi calibración
   clearTimeout(enrollUi.timer);
   const run = enrollUi.run;
   enrollUi.timer = setTimeout(() => {
     if (!enrollUi.active || run !== enrollRun) return;
     enrollUi.capturing = false;
-    setDuckBypass(false);
+    refreshDuckBypass();
     net.sendJSON({ type: 'enroll', action: 'cancel' });
     toast(t('enroll_retry'), 5000);
     enrollUi.step = 1;             // directiva: al fallar el timeout, reinicia el PROCESO
@@ -1234,7 +1337,7 @@ function handleEnrollResult(msg) {
   if (msg.step !== enrollUi.step || (msg.run != null && msg.run !== enrollRun)) return;
   clearTimeout(enrollUi.timer);
   enrollUi.capturing = false;
-  setDuckBypass(false);
+  refreshDuckBypass();
   if (enrollUi.step < ENROLL_STEPS) {
     enrollUi.step += 1;
     renderEnrollStep();            // el usuario pulsa el botón para la siguiente frase
@@ -1251,7 +1354,7 @@ function cancelEnrollment() {
   clearTimeout(enrollUi.timer);
   enrollUi.active = false;
   enrollUi.capturing = false;
-  setDuckBypass(false);
+  refreshDuckBypass();
   $('enrollModal').classList.add('hidden');
 }
 
@@ -1266,12 +1369,19 @@ function handleMessage(msg) {
         if (m.x !== undefined) seats.positions.set(m.speaker_id, { x: m.x, y: m.y, angle: m.angle });
         return [m.speaker_id, m];
       }));
+      // Sincronizar el turno actual: quien entra a MITAD de un turno debe saberlo —
+      // si no, hablaba, el servidor descartaba su audio en silencio y su ring buffer
+      // (que solo se llena cuando SABE que está bloqueado) no retenía nada: frase perdida
+      net.floorOwner = msg.floor_owner || null;
+      refreshDuckBypass();
+      for (const m of msg.room) player?.restoreSpeaker(m.speaker_id);  // roster autoritativo
       net.markJoined();
       ui.renderRoom();
       updateListener();                         // el oyente 3D nace en su asiento
       if (!state.enrolled) startEnrollment();   // reconexión a mitad de enroll: reinicia
       break;
     case 'peer_joined':
+      player?.restoreSpeaker(msg.speaker_id);
       if (state.gracePeriods && state.gracePeriods.has(msg.speaker_id)) {
         clearTimeout(state.gracePeriods.get(msg.speaker_id));
         state.gracePeriods.delete(msg.speaker_id);
@@ -1287,13 +1397,7 @@ function handleMessage(msg) {
     case 'peer_moved':
       if (state.room.has(msg.speaker_id)) {
         seats.positions.set(msg.speaker_id, { x: msg.x, y: msg.y, angle: msg.angle });
-        if (window.player && window.player.panners && window.player.panners.has(msg.speaker_id)) {
-          const p = window.player.panners.get(msg.speaker_id);
-          p.positionX.value = msg.x * 5;
-          p.positionZ.value = msg.y * 5;
-          p.orientationX.value = Math.cos(msg.angle);
-          p.orientationZ.value = Math.sin(msg.angle);
-        }
+        positionPanner(msg.speaker_id, msg);   // suavizado; omnidireccional (sin conos)
         seats.render();
       }
       break;
@@ -1342,10 +1446,12 @@ function handleMessage(msg) {
     case 'floor_acquired':
       net.floorOwner = msg.speaker_id;
       ui.updateFloorUI();
+      refreshDuckBypass();           // si el turno es MÍO, el ducking no puede callarme
       break;
     case 'floor_released':
       net.floorOwner = null;
       ui.updateFloorUI();
+      refreshDuckBypass();
       break;
     case 'voice_assigned':
       renderVoiceCard(msg.voices || {});
@@ -1545,6 +1651,7 @@ function backToLobby(message) {
   state.muted = true;
   state.room.clear();
   seats.clear();
+  micBuffer = [];      // onset retenido de ESTA sesión: no debe volcarse en la siguiente
   _teardownAudio();
   ui.resetDom();
   const muteBtn = $('muteBtn');

@@ -412,8 +412,12 @@ class CoreEngine:
             try:
                 self.partial_whisper = WhisperModel(
                     partial_size,
-                    device=stt_cfg.get("device", "cpu"),
-                    compute_type=stt_cfg.get("compute_type", "int8"),
+                    # Los parciales van a CPU SALVO opt-in explícito en partials.device:
+                    # si heredaran stt.device=cuda, las hipótesis desechables competirían
+                    # con los finales por la GPU y sumarían ~0.3 GB de VRAM. Ojo: el
+                    # compute_type tampoco se hereda (int8_float16 no existe en CPU).
+                    device=str(partial_cfg.get("device", "cpu")),
+                    compute_type=str(partial_cfg.get("compute_type", "int8")),
                     cpu_threads=int(partial_cfg.get("cpu_threads", 2)),
                     num_workers=1,
                     download_root=str(whisper_dir),
