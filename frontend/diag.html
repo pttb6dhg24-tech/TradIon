@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TradIon — Diagnóstico de audio 3D</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 16px; background: #0d1117; color: #e6edf3;
+         font: 15px/1.5 -apple-system, system-ui, sans-serif; }
+  h1 { font-size: 1.2rem; margin: 0 0 4px; }
+  p.sub { color: #8b949e; margin: 0 0 16px; font-size: .85rem; }
+  section { background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+            padding: 14px; margin-bottom: 14px; }
+  h2 { font-size: .95rem; margin: 0 0 10px; color: #79c0ff; }
+  button { background: #238636; color: #fff; border: 0; border-radius: 8px;
+           padding: 12px 16px; font-size: .95rem; margin: 4px 6px 4px 0; cursor: pointer; }
+  button.alt { background: #1f6feb; }
+  button:disabled { background: #30363d; color: #8b949e; }
+  table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  td { padding: 4px 6px; border-bottom: 1px solid #21262d; vertical-align: top; }
+  td:first-child { color: #8b949e; white-space: nowrap; }
+  .ok   { color: #3fb950; font-weight: 600; }
+  .bad  { color: #f85149; font-weight: 600; }
+  .warn { color: #d29922; font-weight: 600; }
+  #veredicto { font-size: .95rem; }
+  code { background: #21262d; border-radius: 4px; padding: 1px 5px; }
+</style>
+</head>
+<body>
+<h1>🔬 Diagnóstico de audio 3D</h1>
+<p class="sub">Mide lo que ESTE móvil + ESTOS auriculares pueden dar. Ejecuta los pasos en orden,
+con los auriculares que vayas a usar en la mesa.</p>
+
+<section>
+  <h2>Paso 1 — Medir SIN micrófono</h2>
+  <button id="b1">Medir ahora</button>
+  <table id="t1"></table>
+</section>
+
+<section>
+  <h2>Paso 2 — Abrir micrófono y RE-medir</h2>
+  <p class="sub">La app real siempre tiene el micro abierto: esta es la medida que cuenta.
+  En iOS/Android la ruta de audio puede DEGRADARSE al abrirlo (Bluetooth → HFP mono).</p>
+  <button id="b2" disabled>Abrir micro y medir</button>
+  <table id="t2"></table>
+</section>
+
+<section>
+  <h2>Paso 3 — Prueba de oído (con el micro abierto)</h2>
+  <p class="sub">Si oyes el tono claramente en UN solo lado, el estéreo sobrevive.
+  Si suena igual por ambos, la ruta es mono y el 3D es imposible aquí.</p>
+  <button id="bL" class="alt" disabled>◀ Tono IZQUIERDA</button>
+  <button id="bR" class="alt" disabled>Tono DERECHA ▶</button>
+  <button id="bO" class="alt" disabled>↻ Voz orbitando (HRTF)</button>
+</section>
+
+<section>
+  <h2>Veredicto</h2>
+  <div id="veredicto">Ejecuta los pasos 1-3.</div>
+</section>
+
+<script>
+'use strict';
+let ctx = null, mic = null, sinMic = null, conMic = null;
+
+function fila(t, k, v, cls) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td>${k}</td><td class="${cls || ''}">${v}</td>`;
+  t.appendChild(tr);
+}
+
+function medir(tabla) {
+  // Contexto NUEVO en cada medición: iOS fija sampleRate/ruta al crearlo
+  if (ctx) ctx.close();
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const d = ctx.destination;
+  const m = {
+    sampleRate: ctx.sampleRate,
+    channelCount: d.channelCount,
+    maxChannelCount: d.maxChannelCount,
+    baseLatency: ctx.baseLatency != null ? (ctx.baseLatency * 1000).toFixed(1) + ' ms' : 'n/d',
+  };
+  tabla.innerHTML = '';
+  fila(tabla, 'sampleRate', m.sampleRate + ' Hz',
+       m.sampleRate <= 24000 ? 'bad' : 'ok');
+  fila(tabla, 'canales destino (máx)', m.channelCount + ' (' + m.maxChannelCount + ')',
+       m.maxChannelCount < 2 ? 'bad' : 'ok');
+  fila(tabla, 'latencia base', m.baseLatency);
+  return m;
+}
+
+async function dispositivos(tabla) {
+  try {
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    const outs = devs.filter(d => d.kind === 'audiooutput').map(d => d.label).filter(Boolean);
+    const ins  = devs.filter(d => d.kind === 'audioinput').map(d => d.label).filter(Boolean);
+    if (ins.length)  fila(tabla, 'entrada',  ins.join('<br>'));
+    if (outs.length) fila(tabla, 'salida', outs.join('<br>'));
+    const bt = [...ins, ...outs].some(l => /bluetooth|airpods|buds|bt/i.test(l));
+    if (bt) fila(tabla, 'Bluetooth', 'DETECTADO — con micro abierto conmuta a HFP mono', 'warn');
+  } catch (e) { /* labels requieren permiso: silencioso */ }
+}
+
+function veredicto() {
+  const v = document.getElementById('veredicto');
+  if (!conMic) { v.textContent = 'Ejecuta el paso 2.'; return; }
+  const problemas = [];
+  if (conMic.sampleRate <= 24000)
+    problemas.push('⛔ <b>sampleRate ' + conMic.sampleRate + ' Hz con el micro abierto</b>: firma del perfil Bluetooth HFP (mono, telefonía). El 3D es IMPOSIBLE en esta ruta. Usa auriculares de CABLE.');
+  if (conMic.maxChannelCount < 2)
+    problemas.push('⛔ <b>La salida reporta 1 canal</b>: ruta mono. Sin estéreo no hay 3D.');
+  if (sinMic && conMic.sampleRate < sinMic.sampleRate)
+    problemas.push('⚠️ La calidad BAJÓ al abrir el micrófono (' + sinMic.sampleRate + ' → ' + conMic.sampleRate + ' Hz): el sistema degradó la ruta de audio por la captura.');
+  if (!problemas.length)
+    problemas.push('✅ Métricas compatibles con estéreo. La prueba DEFINITIVA es el paso 3: si el tono IZQUIERDA se oye solo a la izquierda, el 3D funciona aquí. Si suena por ambos lados igual, este navegador colapsa la página a mono con el micro abierto (bug conocido de iOS Safari) — prueba con auriculares de cable y reporta el resultado.');
+  v.innerHTML = problemas.join('<br><br>');
+}
+
+function tono(pan) {
+  if (!ctx || ctx.state === 'closed') medir(document.getElementById('t2'));
+  ctx.resume();
+  const osc = ctx.createOscillator();
+  osc.frequency.value = 440;
+  const g = ctx.createGain(); g.gain.value = 0.25;
+  const p = new StereoPannerNode(ctx, { pan });
+  osc.connect(g).connect(p).connect(ctx.destination);
+  osc.start(); osc.stop(ctx.currentTime + 1.5);
+}
+
+function orbita() {
+  if (!ctx || ctx.state === 'closed') medir(document.getElementById('t2'));
+  ctx.resume();
+  const osc = ctx.createOscillator();
+  osc.type = 'sawtooth'; osc.frequency.value = 220;
+  const g = ctx.createGain(); g.gain.value = 0.15;
+  const p = new PannerNode(ctx, { panningModel: 'HRTF', distanceModel: 'inverse',
+                                  refDistance: 1, positionZ: -2 });
+  osc.connect(g).connect(p).connect(ctx.destination);
+  const t0 = ctx.currentTime;
+  for (let i = 0; i <= 40; i++) {           // vuelta completa en 4 s
+    const a = (i / 40) * 2 * Math.PI, t = t0 + (i / 40) * 4;
+    p.positionX.setValueAtTime(2 * Math.sin(a), t);
+    p.positionZ.setValueAtTime(-2 * Math.cos(a), t);
+  }
+  osc.start(); osc.stop(t0 + 4);
+}
+
+document.getElementById('b1').onclick = () => {
+  sinMic = medir(document.getElementById('t1'));
+  document.getElementById('b2').disabled = false;
+  veredicto();
+};
+document.getElementById('b2').onclick = async () => {
+  try {
+    mic = await navigator.mediaDevices.getUserMedia(
+      { audio: { echoCancellation: true } });   // como la app real
+  } catch (e) {
+    alert('Micrófono denegado: ' + e.message); return;
+  }
+  const t2 = document.getElementById('t2');
+  conMic = medir(t2);
+  const track = mic.getAudioTracks()[0];
+  const s = track.getSettings ? track.getSettings() : {};
+  if (s.sampleRate) fila(t2, 'mic sampleRate', s.sampleRate + ' Hz',
+                         s.sampleRate <= 16000 ? 'warn' : '');
+  await dispositivos(t2);
+  for (const id of ['bL', 'bR', 'bO']) document.getElementById(id).disabled = false;
+  veredicto();
+};
+document.getElementById('bL').onclick = () => tono(-1);
+document.getElementById('bR').onclick = () => tono(1);
+document.getElementById('bO').onclick = orbita;
+</script>
+</body>
+</html>

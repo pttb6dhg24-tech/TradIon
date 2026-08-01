@@ -369,6 +369,61 @@ SVO↔SOV lo aprende el transformer (atención cruzada), no reglas manuales.
   Nota operativa: los logs venían del servidor Windows corriendo `008f34c`; hace
   falta `git pull` + reiniciar el servidor en la Victus para recibir este arreglo.
 
+- **2026-08-01 (3) — Autopsia de la 2ª sesión en la Victus + investigación de plataforma.**
+  La sesión FUNCIONÓ de extremo a extremo: pipeline en **519-972 ms por frase** tras
+  warmup (objetivo sub-segundo cumplido en la 3070). Cinco defectos reales detectados
+  en el log y corregidos: (1) **cada reconexión generaba un speaker_id nuevo** → la
+  "reconexión invisible" del cliente (indexada por id) nunca casaba y la mesa veía
+  salir/entrar usuarios en cada micro-corte; ahora el id es ESTABLE por dispositivo
+  (guardado en el footprint). (2) **La primera frase pagaba la carga perezosa del ONNX
+  de Piper (4009 ms medidos)**: prewarm de las voces asignadas al terminar el enroll
+  (y en set_voice/reconexión), en el executor de TTS. (3) **NLLB inventaba turnos de
+  diálogo** ('What did you say?' → '- ¿Qué dijiste? - No.'): documentado en la
+  literatura (HalOmi, arxiv 2305.11746: ≥3% de alucinación en todas las direcciones
+  del MISMO modelo 600M; fairseq#4854: entradas cortas → continuación inventada).
+  Doble defensa: decoder endurecido con el "standard setting" de NLLB
+  (max_decoding_length RELATIVO 3·len+5, no_repeat_ngram_size=3, disable_unk=True) +
+  post-proceso que recorta el formato de diálogo cuando la fuente no lo tenía (estilo
+  LibreTranslate PR#554); casos del log verificados por simulación, diálogos reales y
+  em-dashes de aposición respetados. (4) **'- Thank you.'/'Thank you.' sonaba dos
+  veces**: dedup de chunks normalizado sin guion. (5) **El arranque hacía ~8
+  peticiones a huggingface.co**: carga local_files_only-primero con fallback online
+  (Whisper ×2 y tokenizer NLLB) → arranca sin internet en la sala.
+  **Investigación de red (3 agentes, fuentes en el informe):** el corte del WS a los
+  ~113 s encaja con el idle/read-timeout de 100-125 s del edge de Cloudflare (NO
+  configurable fuera de Enterprise; cloudflared#1282 documenta cierres 1006 incluso
+  con tráfico); la URL de trycloudflare **no es privada** (subdominio aleatorio sin
+  auth; el README ya lo advertía) y añade 50-200 ms de hairpin estando en la misma
+  sala → para la mesa física: **LAN directa + mkcert con la IP de la Victus + regla
+  de firewall** (netsh advfirewall ... localport=8443 remoteip=localsubnet).
+  **Veredicto del 3D (no es bug nuestro, es plataforma):** HRTF es binaural (spec
+  W3C: "Stereo Only") → auriculares obligatorios, por altavoz es físicamente
+  imposible; con Bluetooth + micro abierto iOS/Android conmutan A2DP→HFP (MONO,
+  8-16 kHz; Apple: "HFP ports will be given a higher priority"); y hay bug conocido
+  de iOS Safari (foros Apple 672037/696034, sin respuesta) donde getUserMedia fuerza
+  TODA la página a mono. Herramienta nueva: **/static/diag.html** — mide
+  sampleRate/canales antes y después de abrir el micro, detecta la firma HFP y
+  permite la prueba de oído (tono L/R + órbita HRTF) para separar bug de límite de
+  plataforma en cada móvil. Regla práctica para la mesa: auriculares DE CABLE.
+  Pendiente F10 (backlog): PIN de sala para cualquier exposición fuera de LAN;
+  en Android, valorar sacar el TTS del loopback WebRTC (Chromium colapsa el estéreo
+  en APM por diseño — issue 41481053) cuando haya auriculares de cable.
+  **Verificación adversarial del lote (2 lentes + refutación): 6 hallazgos, 0 falsos
+  positivos, todos corregidos** — los dos ALTA nacían del id estable: (a) el
+  peer_left del socket viejo se difundía hasta 15 s DESPUÉS del peer_joined del
+  reconectado (leave espera drop_session+drenaje) → el grace expiraba sin cancelación
+  y dropSpeaker silenciaba su TTS en toda la mesa para siempre → leave ahora hace pop
+  condicional (solo si la entrada es SU instancia) y suprime peer_left/floor si el id
+  ya fue re-registrado; (b) _strip_invented_dialog recortaba oraciones REALES cuando
+  la fuente era multi-oración y NLLB emitía formato subtítulo → solo se recorta con
+  fuente de UNA oración (multi-oración: se limpian los guiones, contenido intacto).
+  Más: TOCTOU en create_session (re-check tras el await del VAD: sin él dos joins del
+  mismo token podían compartir id y fugar un VAD del pool para siempre), segment_id
+  MONÓTONO entre sesiones (seq_start desde footprint.last_seg+64: el contador a 1
+  hacía descartar ~50 locuciones de parciales tras reconectar), prewarm en executor
+  propio (compartir el único worker de TTS metía 2-4 s de head-of-line a hablantes
+  activos) y _norm del dedup solo con guion+espacio ('-5 grados.' es un número).
+
 ## 🔗 Fuentes
 
 - Referencia integral: https://github.com/QuentinFuxa/WhisperLiveKit · Topología: https://github.com/niedev/RTranslator
