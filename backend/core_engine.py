@@ -465,14 +465,18 @@ class CoreEngine:
                         force_language: bool = False) -> tuple[str, float]:
         """Corre dentro del ThreadPoolExecutor. Acepta ndarray float32 16 kHz en memoria (A3).
 
-        Anti-eco por LID (auditoría A1): el segmento se descarta SOLO si Whisper detecta
-        OTRO idioma DE LA SALA (cross-talk real: el micro captó el TTS o la voz de otro
-        usuario). Una detección exótica (gallego/catalán/portugués para un hablante de
-        castellano — fallo notorio del LID de Whisper) NO descarta: se transcribe en el
-        idioma esperado. `force_language=True` (calibración, A2) salta el LID por completo:
-        ahí el idioma se conoce con certeza. El doble-VAD interno queda desactivado (A4):
-        el recorte de silencios ya lo hizo el Silero de la sesión. Todos los descartes se
-        LOGUEAN con su causa: nunca más un fallo silencioso indistinguible de 'no habló'."""
+        El idioma SIEMPRE va forzado al declarado por el usuario (A2). El filtro LID
+        anti-eco (A1) queda RETIRADO a propósito — no lo restaures: en segmentos cortos
+        el LID de Whisper es una moneda al aire (acento español hablando inglés -> 'ja'
+        p=0.40) y descartaba sistemáticamente voz válida ('' en cada segmento). El
+        cross-talk que el LID vigilaba lo arbitra ahora el floor token CSMA/CA en el
+        servidor (audio ajeno puesto a cero). Riesgo residual asumido: si un vecino
+        MUTEADO habla junto a tu móvil, tu sesión puede adquirir el canal y transcribir
+        su voz como basura en TU idioma — los filtros no_speech/logprob de abajo cazan
+        la mayoría; si reaparecen subtítulos basura en mesa física, ese es el sitio.
+        `force_language` se conserva por compatibilidad (enroll): hoy es redundante.
+        El doble-VAD interno queda desactivado (A4): el recorte de silencios ya lo hizo
+        el Silero de la sesión. Todos los descartes se LOGUEAN con su causa."""
         t0 = time.perf_counter()
         try:
             # Ahora que tenemos el CSMA/CA (Floor Token), los ecos acústicos son imposibles.

@@ -352,6 +352,23 @@ SVO↔SOV lo aprende el transformer (atención cruzada), no reglas manuales.
   resuelve a int8_float16); parciales a CPU **por defecto en código** (ya no heredan
   `stt.device=cuda` ni `compute_type=int8_float16`, que no existe en CPU).
 
+- **2026-08-01 (2) — Autopsia de la 1ª sesión en la RTX 3070: el LID mataba la voz.**
+  Log del usuario: `Detected language 'ja' (p=0.40)` → `LID anti-eco: descartado
+  segmento` → `''` en cada frase («no funciona nada»). Tres capas: la lógica del filtro
+  había DERIVADO del contrato A1 (el default era descartar cualquier idioma exótico:
+  japonés ni siquiera es de la sala y descartaba igual), no había umbral de confianza
+  (p=0.40 es una moneda al aire en segmentos de 1-2 s), y los segmentos «perdonados»
+  se decodificaban en el idioma DETECTADO (catalán/portugués), nunca en el esperado.
+  **Resolución (commit `dff20a6`, IA concurrente — mismo diagnóstico por dos vías):
+  el LID queda RETIRADO; el idioma va SIEMPRE forzado al declarado (A2).** El
+  cross-talk que A1 vigilaba lo arbitra hoy el floor token (audio ajeno a cero en el
+  servidor). Riesgo residual documentado en el docstring: un vecino MUTEADO hablando
+  junto a tu móvil puede colar su voz como basura en tu idioma (los filtros
+  no_speech/logprob cazan la mayoría) — si reaparecen subtítulos basura en mesa
+  física, ese es el sitio donde mirar. A1 queda formalmente superado por A2+floor.
+  Nota operativa: los logs venían del servidor Windows corriendo `008f34c`; hace
+  falta `git pull` + reiniciar el servidor en la Victus para recibir este arreglo.
+
 ## 🔗 Fuentes
 
 - Referencia integral: https://github.com/QuentinFuxa/WhisperLiveKit · Topología: https://github.com/niedev/RTranslator
