@@ -475,38 +475,15 @@ class CoreEngine:
         LOGUEAN con su causa: nunca más un fallo silencioso indistinguible de 'no habló'."""
         t0 = time.perf_counter()
         try:
+            # Ahora que tenemos el CSMA/CA (Floor Token), los ecos acústicos son imposibles.
+            # Ya NO necesitamos que Whisper adivine el idioma. Le forzamos SIEMPRE el idioma 
+            # esperado para evitar falsos positivos de LID por culpa del ruido (ej. 'ja', 'cy').
             segments, info = self.whisper.transcribe(
                 audio,
-                language=expected_language if force_language else None,
+                language=expected_language,
                 beam_size=self._beam_size,
                 condition_on_previous_text=False,
             )
-
-            # FILTRO ANTI-ECO Y ALUCINACIONES (LID)
-            if not force_language and info.language != expected_language:
-                # Si el idioma detectado no es exactamente el del usuario...
-                drop = False
-                
-                # 1. Si es de los idiomas de la sala, es cross-talk asegurado.
-                if info.language in self.allowed_languages:
-                    drop = True
-                else:
-                    # 2. Si es un dialecto o falso positivo común, lo perdonamos.
-                    # Whisper confunde a menudo el español con gallego/catalán/portugués
-                    if expected_language == "es" and info.language in {"ca", "gl", "pt", "it"}:
-                        drop = False
-                    elif expected_language == "en" and info.language in {"cy", "gd", "ga", "nn"}:
-                        drop = False
-                    elif expected_language == "ko" and info.language in {"zh", "ja"}:
-                        drop = False
-                    else:
-                        # 3. Alucinaciones por ruido (ru, fr, etc) que no pintan nada.
-                        drop = True
-                
-                if drop:
-                    logger.info("LID anti-eco: descartado segmento '%s' (p=%.2f, esperado '%s')", 
-                                info.language, info.language_probability, expected_language)
-                    return "", (time.perf_counter() - t0) * 1000.0
 
             valid_texts = []
             dropped: dict[str, int] = {}
