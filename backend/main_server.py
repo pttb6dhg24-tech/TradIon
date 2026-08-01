@@ -162,9 +162,8 @@ class Client:
         default_factory=lambda: asyncio.Queue(maxsize=OUT_QUEUE_MAX)
     )
     seq: int = 0
-    last_rms: float = 0.0
-    last_rms_at: float = 0.0                  # monotonic: un RMS viejo no puede silenciar a nadie
     is_enrolled: bool = False
+    seat_idx: int = -1                        # plaza hexagonal asignada en el join
     x: float = 0.0
     y: float = 0.0
     angle: float = 0.0
@@ -190,6 +189,21 @@ class TradIonServer:
         self._bg_tasks: set[asyncio.Task] = set()
         self.floor_owner: Optional[str] = None
         self.floor_last_active: float = 0.0
+        self.floor_acquired_at: float = 0.0
+        floor_cfg = self.settings.get("room", {}).get("floor") or {}
+        # Histéresis (Schmitt): TOMAR el canal exige voz franca; MANTENERLO es más
+        # barato — sin esto, las palabras finales suaves de una frase caían bajo el
+        # umbral, el turno se liberaba a mitad de locución y el eco del vecino lo robaba
+        self.floor_acquire_rms = float(floor_cfg.get("acquire_rms", 0.025))
+        self.floor_hold_rms = float(floor_cfg.get("hold_rms", 0.012))
+        self.floor_release_s = float(floor_cfg.get("release_ms", 400)) / 1000.0
+        # Anti-inanición: un móvil con ruido de fondo permanente > umbral retenía el
+        # canal PARA SIEMPRE y silenciaba a toda la mesa. Tope duro de posesión.
+        self.floor_max_hold_s = float(floor_cfg.get("max_hold_s", 30))
+        # El tope solo funciona si el expulsado no puede RE-tomar el canal en el
+        # siguiente frame (≤128 ms): cuarentena tras una expulsión por max_hold_s
+        self.floor_reacquire_cooldown_s = float(floor_cfg.get("reacquire_cooldown_s", 2.0))
+        self.floor_cooldown_until: dict[str, float] = {}   # speaker_id -> monotonic
 
         # B1: las huellas vocales temporales viven en models/tmp (no en el tmp del SO) y
         # se BARREN al arrancar: un crash jamás deja audio biométrico huérfano en disco
@@ -264,16 +278,30 @@ class TradIonServer:
                 return  # socket muerto: el finally de su handler hará leave()
 
     async def _floor_manager(self) -> None:
-        """Tarea de fondo para liberar el turno de palabra tras inactividad (CSMA/CA)."""
-        while True:
-            await asyncio.sleep(0.1)
-            if self.floor_owner is not None:
-                # 0.4s de inactividad de volumen es el punto dulce para liberar el canal rápidamente
-                if time.monotonic() - self.floor_last_active > 0.4:
+        """Tarea de fondo para liberar el turno de palabra (CSMA/CA): por inactividad
+        de voz (release_ms) o por tope duro de posesión (max_hold_s, anti-inanición)."""
+        try:
+            while True:
+                await asyncio.sleep(0.1)
+                if self.floor_owner is None:
+                    continue
+                now = time.monotonic()
+                reason = None
+                if now - self.floor_last_active > self.floor_release_s:
+                    reason = "inactividad"
+                elif now - self.floor_acquired_at > self.floor_max_hold_s:
+                    reason = f"tope de {self.floor_max_hold_s:.0f}s (anti-inanición)"
+                    # Sin cuarentena, el mismo móvil ruidoso re-tomaba el canal en el
+                    # siguiente frame (~128 ms) y el tope anti-inanición no servía de nada
+                    self.floor_cooldown_until[self.floor_owner] = (
+                        now + self.floor_reacquire_cooldown_s)
+                if reason:
                     old_owner = self.floor_owner
                     self.floor_owner = None
                     self._broadcast({"type": "floor_released", "speaker_id": old_owner})
-                    logger.info("El canal se ha liberado (expiró el turno de %s)", old_owner)
+                    logger.info("Canal liberado (%s) — era de %s", reason, old_owner)
+        except asyncio.CancelledError:
+            return  # apagado ordenado del servidor
 
     @staticmethod
     def _tts_frame(header: dict, wav: bytes) -> bytes:
@@ -323,7 +351,18 @@ class TradIonServer:
 
         client = Client(speaker_id=speaker_id, name=name, language=language, ws=ws,
                         session=session, token=token, is_enrolled=False)
-        
+
+        # Asiento hexagonal INICIAL asignado por el servidor: sin esto el roster viajaba
+        # con x=y=angle=0.0 y todos los PannerNodes (y el listener) nacían en el ORIGEN
+        # -> sin dirección ni distancia, el 3D era mono hasta que alguien arrastraba su
+        # ficha. Primera plaza libre del hexágono (los índices se reciclan al salir).
+        taken = {c.seat_idx for c in self.clients.values() if c.seat_idx >= 0}
+        client.seat_idx = next(i for i in range(self.max_speakers) if i not in taken)
+        seat_angle = client.seat_idx * 2.0 * math.pi / max(self.max_speakers, 1) - math.pi / 2.0
+        client.x = 0.72 * math.cos(seat_angle)
+        client.y = 0.72 * math.sin(seat_angle)
+        client.angle = math.atan2(-client.y, -client.x)   # mirando al centro de la mesa
+
         # Restaurar huella vocal si existía (reconexión por micro-corte)
         if token and token in self.footprints:
             fp = self.footprints[token]
@@ -333,6 +372,10 @@ class TradIonServer:
             client.user_f0 = fp["f0"]
             client.voice_by_lang = fp["voices"].copy()
             client.is_enrolled = True
+            # El asiento también sobrevive al micro-corte (si el usuario lo arrastró,
+            # reaparece donde estaba, no en la plaza hexagonal por defecto)
+            if "x" in fp:
+                client.x, client.y, client.angle = fp["x"], fp["y"], fp["angle"]
         loop = asyncio.get_running_loop()
         client.pump_task = loop.create_task(self._pump(client))
         client.writer_task = loop.create_task(self._writer(client))
@@ -343,6 +386,9 @@ class TradIonServer:
             "speaker_id": speaker_id,
             "room": [{"speaker_id": c.speaker_id, "name": c.name, "language": c.language, "x": c.x, "y": c.y, "angle": c.angle}
                      for c in self.clients.values() if getattr(c, 'is_enrolled', False) or c.speaker_id == speaker_id],
+            # Estado del turno CSMA/CA: quien entra a mitad de un turno debe saberlo
+            # (si no, su cliente no bufferizaba y su primera frase se perdía en silencio)
+            "floor_owner": self.floor_owner,
         })
         
         if client.is_enrolled:
@@ -401,6 +447,7 @@ class TradIonServer:
         if self.floor_owner == client.speaker_id:
             self.floor_owner = None
             self._broadcast({"type": "floor_released", "speaker_id": client.speaker_id})
+        self.floor_cooldown_until.pop(client.speaker_id, None)
         logger.info("- %s (%s) — %d en sala", client.name, client.speaker_id, len(self.clients))
 
     # ---------- pipeline de enrutamiento ----------
@@ -650,33 +697,44 @@ class TradIonServer:
                         # que el hablante original enviará su paquete ~4ms antes que los "ecos".
                         
                         now_mono = time.monotonic()
-                        audio_np = np.frombuffer(msg.data, dtype=np.int16).astype(np.float32) / 32768.0
-                        rms = float(np.sqrt(np.mean(audio_np**2))) if audio_np.size else 0.0
-                        client.last_rms = rms
-                        client.last_rms_at = now_mono
+                        # Truncar al múltiplo de 2: un frame de longitud IMPAR (proxy que
+                        # fragmenta, cliente hostil) hacía que frombuffer(int16) lanzara
+                        # ValueError sin capturar y MATABA la conexión entera del cliente
+                        pcm = msg.data[: len(msg.data) & ~1]
+                        if not pcm:
+                            continue
+                        audio_np = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+                        rms = float(np.sqrt(np.mean(audio_np**2)))
 
-                        safe_data = msg.data
+                        safe_data = pcm
 
-                        if rms > 0.025:
-                            if self.floor_owner is None or self.floor_owner == client.speaker_id:
-                                # Toma del canal o mantenimiento del mismo
-                                if self.floor_owner is None:
-                                    self.floor_owner = client.speaker_id
-                                    self._broadcast({"type": "floor_acquired", "speaker_id": client.speaker_id})
-                                    logger.info("El canal (Turno) ha sido tomado por %s", client.speaker_id)
+                        if self.floor_owner == client.speaker_id:
+                            # Histéresis: mantener el turno solo requiere hold_rms (más bajo
+                            # que acquire): las palabras finales suaves ya no sueltan el canal
+                            # a mitad de frase. El silencio real sigue sin renovar el turno.
+                            if rms > self.floor_hold_rms:
                                 self.floor_last_active = now_mono
+                        elif now_mono < self.floor_cooldown_until.get(client.speaker_id, 0.0):
+                            # Cuarentena post-max_hold_s: TODO el audio del expulsado se
+                            # silencia (no solo el que supera acquire_rms) — su ruido suave
+                            # seguía entrando a SU pipeline y generaba segmentos basura
+                            safe_data = bytes(len(pcm))
+                        elif rms > self.floor_acquire_rms:
+                            if self.floor_owner is None:
+                                # Toma del canal (First-In: la latencia acústica favorece
+                                # al hablante real frente a los ecos de los otros móviles)
+                                self.floor_owner = client.speaker_id
+                                self.floor_acquired_at = now_mono
+                                self.floor_last_active = now_mono
+                                self._broadcast({"type": "floor_acquired",
+                                                 "speaker_id": client.speaker_id})
+                                logger.info("Canal tomado por %s", client.speaker_id)
                             else:
-                                # Canal ocupado por otro: descartar este audio inmediatamente (crosstalk)
-                                safe_data = bytes(len(msg.data))
-                        else:
-                            # Si no hay voz fuerte, y el canal es de otro, también lo silenciamos por si acaso
-                            if self.floor_owner is not None and self.floor_owner != client.speaker_id:
-                                safe_data = bytes(len(msg.data))
-                            elif self.floor_owner == client.speaker_id:
-                                # Permite que el dueño actual envíe silencios (colas de frase)
-                                # ¡OJO! NO actualizamos floor_last_active aquí, para que 
-                                # si el usuario guarda silencio 1.0s, pierda el turno.
-                                pass
+                                # Canal ocupado por otro: descartar (crosstalk)
+                                safe_data = bytes(len(pcm))
+                        elif self.floor_owner is not None:
+                            # Sin voz franca y el canal es de otro: silenciar por si acaso
+                            safe_data = bytes(len(pcm))
 
                         await client.session.feed(safe_data)
                     except AudioFormatError as exc:
@@ -802,6 +860,7 @@ class TradIonServer:
                                     "path": client.ref_audio_path,
                                     "f0": client.user_f0,
                                     "voices": client.voice_by_lang.copy(),
+                                    "x": client.x, "y": client.y, "angle": client.angle,
                                 }
                             
                             logger.info("+ %s (%s, %s) completó calibración", client.name, client.language, client.speaker_id)
@@ -822,11 +881,23 @@ class TradIonServer:
                                                      "message": f"Voz inválida: {voice_id!r} para {lang!r}"})
                     elif msg_type == "move" and client is not None:
                         try:
-                            client.x = float(data.get("x", 0.0))
-                            client.y = float(data.get("y", 0.0))
-                            client.angle = float(data.get("angle", 0.0))
+                            nx = float(data.get("x", 0.0))
+                            ny = float(data.get("y", 0.0))
+                            na = float(data.get("angle", 0.0))
+                            # "Infinity"/"NaN" como STRING es JSON válido y float() lo
+                            # acepta; json.dumps(allow_nan=True) lo re-emite como
+                            # Infinity A PELO -> JSON.parse revienta en TODOS los
+                            # clientes (y en cada joined futuro vía footprint).
+                            # Solo coordenadas finitas y acotadas a la mesa.
+                            if all(map(math.isfinite, (nx, ny, na))):
+                                client.x = max(-1.0, min(1.0, nx))
+                                client.y = max(-1.0, min(1.0, ny))
+                                client.angle = max(-2 * math.pi, min(2 * math.pi, na))
                         except (TypeError, ValueError):
                             pass
+                        if client.token and client.token in self.footprints:
+                            self.footprints[client.token].update(
+                                x=client.x, y=client.y, angle=client.angle)
                         self._broadcast(
                             {"type": "peer_moved", "speaker_id": client.speaker_id, "x": client.x, "y": client.y, "angle": client.angle},
                             exclude=client.speaker_id,

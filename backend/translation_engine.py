@@ -103,6 +103,10 @@ class TextTranslator:
         # puede acelerar el MT con device: cuda
         self._ct2 = ctranslate2.Translator(
             str(ct2_dir), device=str(cfg.get("device", "cpu")),
+            # 'auto' elige el mejor kernel del dispositivo REAL: sin esto, un modelo
+            # convertido a int8 corría como int8_float32 en CUDA (kernels fp32, más
+            # lento y más VRAM). En la 3070 'auto' resuelve a int8_float16.
+            compute_type=str(cfg.get("compute_type", "auto")),
             inter_threads=int(cfg.get("workers", 2)), intra_threads=0,
         )
 

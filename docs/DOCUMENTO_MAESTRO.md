@@ -311,6 +311,47 @@ SVO↔SOV lo aprende el transformer (atención cruzada), no reglas manuales.
   (1,5-4 s por frase; clonación como modo opcional) y aviso de seguridad del túnel
   público sin autenticación.
 
+- **2026-08-01 — Auditoría experta: 3D espacial + Floor Token + despliegue RTX 3070.**
+  Verificación adversarial (3 revisores × 2 pasadas): 15 hallazgos + 2 de la segunda
+  pasada (validación de `move`: un cliente que manda `"Infinity"`/`"NaN"` como string
+  pasaba `float()` y `json.dumps` lo re-emitía como `Infinity` a pelo → `JSON.parse`
+  reventaba en TODOS los clientes y en cada `joined` futuro vía footprint — ahora solo
+  coordenadas finitas acotadas; y cuarentena post-max_hold TOTAL: se silencia todo el
+  audio del expulsado, no solo el que supera acquire_rms). Todos aplicados.
+  **(1) Por qué el 3D "no funcionaba" — cinco causas apiladas, la matemática era correcta:**
+  `positionPanner` leía `window.player`, que NO existe (un `let` top-level de script
+  clásico no crea propiedad en window) → recolocar paneles era un no-op desde el día 1;
+  el **servidor enviaba x=y=angle=0.0** en el roster → todos los panners y el listener
+  nacían en el ORIGEN (sin geometría no hay HRTF): ahora `join()` asigna **asiento
+  hexagonal inicial** (primera plaza libre, se recicla al salir; el asiento arrastrado
+  sobrevive a micro-cortes vía footprint); los **conos** de los panners dejaban al
+  oyente del borde FUERA del cono del vecino (fuentes ahora omnidireccionales: en una
+  mesa la dirección la da la geometría oyente-fuente); el modelo de distancia default
+  (inverse, rolloff 1) aplastaba la direccionalidad (ahora ref 2 / rolloff 0,35);
+  y el loopback Android negociaba Opus MONO (munge `stereo=1` sobre la descripción
+  REMOTA, RFC 7587: fmtp declara lo que el RECEPTOR acepta). Glide `setTargetAtTime`
+  (τ=0,08 s) para posiciones; la orientación se fija directa (interpolar el forward
+  a través de (0,0,0) es inválido y el giro de 180° pasaba por ahí).
+  **(2) Floor Token (CSMA/CA) endurecido:** cuarentena `reacquire_cooldown_s` (2 s)
+  tras expulsión por `max_hold_s` — sin ella el mismo móvil ruidoso re-tomaba el canal
+  en el siguiente frame (~128 ms) y el tope anti-inanición no servía; ring buffer del
+  cliente con **timestamp y poda a 700 ms** (voz retenida vieja adquiría el floor para
+  alguien ya callado) y umbral 0,028 (> acquire_rms: retener lo que no puede adquirir
+  solo parte frases); **bypass del ducking mientras POSEO el turno** (un TTS rezagado
+  ajeno silenciaba mi mic >400 ms y me robaba el floor a mitad de frase; fuente única
+  `refreshDuckBypass()`); frame binario de longitud IMPAR ya no mata la conexión
+  (truncado a múltiplo de 2 antes de `frombuffer`); TTS tardío de un peer expulsado
+  ya no resucita su panner fantasma (`_dropped` + `restoreSpeaker` al reunirse: el
+  client_token reutiliza speaker_id); `micBuffer` purgado en `backToLobby`; código
+  muerto `last_rms/last_rms_at` eliminado.
+  **(3) RTX 3070 8 GB (settings.windows.yaml):** presupuesto VRAM explícito —
+  whisper large-v3-turbo int8_float16 (~1,5 GB) + NLLB-600M int8 (~1,0 GB) + contexto
+  CUDA (~0,6 GB) ≈ 3,1 GB con Piper en CPU (margen ~5 GB; con f5tts fp16 +~3 GB).
+  `translation.compute_type: auto` pasado a CT2 (faltaba el kwarg: el modelo int8
+  corría como int8_float32 en CUDA — kernels fp32, más lento y más VRAM; 'auto'
+  resuelve a int8_float16); parciales a CPU **por defecto en código** (ya no heredan
+  `stt.device=cuda` ni `compute_type=int8_float16`, que no existe en CPU).
+
 ## 🔗 Fuentes
 
 - Referencia integral: https://github.com/QuentinFuxa/WhisperLiveKit · Topología: https://github.com/niedev/RTranslator
