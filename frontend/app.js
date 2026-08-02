@@ -92,6 +92,12 @@ const I18N = {
     err_server_down: 'No se pudo entrar a la mesa (servidor no disponible)',
     err_room_full: 'La mesa está llena',
     mute_tip: '🎙️ Pulsa para que te escuchen',
+    status_muted: '🔇 Micro silenciado — pulsa el botón para hablar',
+    status_turn_other: '⏳ Habla {name} — espera tu turno',
+    status_turn_mine: '🎤 Tu turno — te escucho…',
+    feed_empty: 'Habla y verás aquí la conversación traducida',
+    diag_title: 'Diagnóstico de audio 3D',
+    enroll_exit: 'Volver al lobby',
   },
   en: {
     tagline: 'The table that translates on its own',
@@ -140,6 +146,12 @@ const I18N = {
     err_server_down: 'Could not join the table (server unavailable)',
     err_room_full: 'The table is full',
     mute_tip: '🎙️ Tap to let others hear you',
+    status_muted: '🔇 Mic muted — tap the button to talk',
+    status_turn_other: '⏳ {name} is speaking — wait for your turn',
+    status_turn_mine: "🎤 Your turn — I'm listening…",
+    feed_empty: 'Speak and the translated conversation will appear here',
+    diag_title: '3D audio diagnostics',
+    enroll_exit: 'Back to lobby',
   },
   ko: {
     tagline: '스스로 통역하는 테이블',
@@ -188,6 +200,12 @@ const I18N = {
     err_server_down: '테이블에 입장할 수 없습니다 (서버 연결 불가)',
     err_room_full: '테이블이 가득 찼습니다',
     mute_tip: '🎙️ 탭하면 들립니다',
+    status_muted: '🔇 마이크 꺼짐 — 버튼을 누르면 말할 수 있어요',
+    status_turn_other: '⏳ {name} 님이 말하는 중 — 차례를 기다려 주세요',
+    status_turn_mine: '🎤 당신 차례 — 듣고 있어요…',
+    feed_empty: '말하면 번역된 대화가 여기에 표시됩니다',
+    diag_title: '3D 오디오 진단',
+    enroll_exit: '로비로 돌아가기',
   },
 };
 
@@ -217,8 +235,11 @@ function updateUI() {
   });
   document.querySelectorAll('[data-i18n-title]').forEach((el) => {
     el.title = t(el.dataset.i18nTitle);
+    el.setAttribute('aria-label', t(el.dataset.i18nTitle));  // botones de solo-icono
   });
+  $('feed').dataset.empty = t('feed_empty');   // estado vacío del feed (CSS :empty)
   ui.setStatus(ui._lastStatus);          // el estado visible también cambia de idioma
+  ui.refreshMeStatus();
   if (enrollUi.active) renderEnrollStep();
 }
 
@@ -248,10 +269,10 @@ function colorFor(speakerId) {
   return `hsl(${h} 70% 65%)`;
 }
 
-function toast(message, ms = 4000) {
+function toast(message, ms = 4000, kind = 'error') {
   const el = $('toast');
   el.textContent = message;
-  el.classList.remove('hidden');
+  el.className = 'toast' + (kind === 'info' ? ' info' : '');  // info: sin alarma roja
   clearTimeout(toast._t);
   toast._t = setTimeout(() => el.classList.add('hidden'), ms);
 }
@@ -908,16 +929,21 @@ const seats = {
       seat.style.background = colorFor(id);
       seat.style.left = `${50 + pos.x * 44}%`;
       seat.style.top = `${50 + pos.y * 44}%`;
-      seat.style.transform = `translate(-50%, -50%) rotate(${pos.angle + Math.PI/2}rad)`;
+      // La ficha NO gira (la 'R' salía boca abajo y las etiquetas caían en
+      // posiciones distintas según el ángulo): solo gira la "nariz" dentro
+      // de su propio contenedor rotado
+      seat.style.transform = 'translate(-50%, -50%)';
       seat.textContent = (member.name || '?')[0].toUpperCase();
+      const rot = document.createElement('div');
+      rot.className = 'seat-rot';
+      rot.style.transform = `rotate(${pos.angle + Math.PI / 2}rad)`;
       const nose = document.createElement('div');
       nose.className = 'seat-nose';
-      seat.appendChild(nose);
+      rot.appendChild(nose);
+      seat.appendChild(rot);
       const label = document.createElement('span');
       label.className = 'seat-name';
       label.textContent = id === state.speakerId ? `${member.name} ${t('me_suffix')}` : member.name;
-      // keep label unrotated
-      label.style.transform = `rotate(${-(pos.angle + Math.PI/2)}rad)`;
       seat.appendChild(label);
       this._draggable(seat, plan);
       plan.appendChild(seat);
@@ -941,9 +967,8 @@ const seats = {
         seat.style.top = `${50 + y * 44}%`;
         const faceAngle = Math.atan2(-y, -x);
         this.positions.set(seat.dataset.id, { x: +x.toFixed(3), y: +y.toFixed(3), angle: +faceAngle.toFixed(3) });
-        seat.style.transform = `translate(-50%, -50%) rotate(${faceAngle + Math.PI/2}rad)`;
-        const label = seat.querySelector('.seat-name');
-        if (label) label.style.transform = `rotate(${-(faceAngle + Math.PI/2)}rad)`;
+        const rot = seat.querySelector('.seat-rot');
+        if (rot) rot.style.transform = `rotate(${faceAngle + Math.PI / 2}rad)`;
 
         positionPanner(seat.dataset.id, { x, y });   // suavizado: sin zipper al arrastrar
         if (seat.dataset.id === state.speakerId) updateListener();  // el oyente sigue mi dedo
@@ -996,21 +1021,18 @@ const ui = {
 
   updateFloorUI() {
     if (!state.seated) return;
-    const meTag = $('meTag');
+    // Resaltar el CHIP del dueño del turno (visible para todos) y traerlo a la
+    // vista si el scroll horizontal lo dejó fuera — antes el único indicio era
+    // un glow sutil en tu propia etiqueta, y solo cuando el turno era TUYO
+    document.querySelectorAll('.chip.floor').forEach((c) => c.classList.remove('floor'));
     if (net.floorOwner) {
-      if (net.floorOwner === state.speakerId) {
-        meTag.style.boxShadow = '0 0 10px #4ade80';
-        meTag.style.borderColor = '#4ade80';
-      } else {
-        meTag.style.boxShadow = 'none';
-        meTag.style.borderColor = '#444';
-        // También podríamos resaltar al que tiene el floor en su asiento (renderRoom)
+      const chip = $(`chip-${net.floorOwner}`);
+      if (chip) {
+        chip.classList.add('floor');
+        chip.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
       }
-    } else {
-      meTag.style.boxShadow = 'none';
-      meTag.style.borderColor = '#444';
     }
-    this.renderRoom();
+    this.refreshMeStatus();
   },
 
   showLobby() {
@@ -1071,15 +1093,33 @@ const ui = {
     const el = $('meText');
     el.textContent = text;
     el.className = 'me-text ' + (partial ? 'partial' : 'final');
-    // Un parcial huérfano (el final llegó vacío o con error y nada lo sustituye)
-    // no debe quedarse fijado como si fuera transcripción real: caduca solo
+    // Caduca solo: un parcial huérfano no debe quedarse fijado, y un final ya
+    // leído debe ceder el sitio a la línea de estado contextual (mute/turno)
     clearTimeout(this._myTextTimer);
-    if (partial) {
-      this._myTextTimer = setTimeout(() => {
-        el.textContent = t('listening');
-        el.className = 'me-text';
-      }, 7000);
+    this._myTextTimer = setTimeout(() => {
+      el.className = 'me-text';
+      this.refreshMeStatus();
+    }, partial ? 7000 : 6000);
+  },
+
+  /** Línea de estado contextual del strip: por qué (no) te estamos escuchando.
+   *  Sin esto, el floor token descartaba tu voz SIN NINGÚN aviso y "Te escucho…"
+   *  se mostraba incluso con el micro silenciado. No pisa transcripciones vivas. */
+  refreshMeStatus() {
+    if (!state.seated) return;
+    const el = $('meText');
+    if (el.classList.contains('partial') || el.classList.contains('final')) return;
+    if (state.muted) { el.textContent = t('status_muted'); return; }
+    if (net?.floorOwner && net.floorOwner !== state.speakerId) {
+      const owner = state.room.get(net.floorOwner);
+      el.textContent = t('status_turn_other', { name: owner?.name || '…' });
+      return;
     }
+    if (state.speakerId && net?.floorOwner === state.speakerId) {
+      el.textContent = t('status_turn_mine');
+      return;
+    }
+    el.textContent = t('listening');
   },
 
   renderRoom() {
@@ -1090,6 +1130,7 @@ const ui = {
       chip.className = 'chip';
       chip.id = `chip-${id}`;
       if (this.speaking.has(id)) chip.classList.add('speaking');
+      if (net?.floorOwner === id) chip.classList.add('floor');   // dueño del turno
       const avatar = document.createElement('span');
       avatar.className = 'avatar';
       avatar.style.background = colorFor(id);
@@ -1374,7 +1415,7 @@ function handleEnrollResult(msg) {
     state.enrolled = true;
     net.sendJSON({ type: 'enrolled' });
     if (state.voices.length) showVoiceCard();   // "Así sonarás": confirmar antes de la mesa
-    else toast(t('enroll_done'), 2500);
+    else toast(t('enroll_done'), 2500, 'info');
   }
 }
 
@@ -1431,6 +1472,7 @@ function handleMessage(msg) {
       }
       net.markJoined();
       ui.renderRoom();
+      ui.updateFloorUI();                       // chip del turno + strip contextual al día
       updateListener();                         // el oyente 3D nace en su asiento
       if (!state.enrolled) startEnrollment();   // reconexión a mitad de enroll: reinicia
       break;
@@ -1723,7 +1765,7 @@ function backToLobby(message) {
   ui.resetDom();
   const muteBtn = $('muteBtn');
   muteBtn.classList.add('muted');
-  muteBtn.textContent = '🔇';
+  muteBtn.textContent = '🎙️';   // el tachado lo dibuja la clase .muted
   $('muteTip').classList.add('hidden');
   ui.setStatus('off');
   ui.showLobby();
@@ -1751,7 +1793,7 @@ $('voiceEnter').addEventListener('click', () => {
   const muteBtn = $('muteBtn');
   muteBtn.classList.add('muted');
   muteBtn.setAttribute('aria-pressed', 'true');
-  muteBtn.textContent = '🔇';
+  muteBtn.textContent = '🎙️';   // el tachado lo dibuja la clase .muted
   if (state.micNodes?.stream) {
     state.micNodes.stream.getAudioTracks().forEach((track) => { track.enabled = false; });
   }
@@ -1767,13 +1809,18 @@ $('planBtn').addEventListener('click', () => {
   $('planModal').classList.remove('hidden');
 });
 $('planClose').addEventListener('click', () => $('planModal').classList.add('hidden'));
+// Salida SIEMPRE disponible de la calibración (antes solo se escapaba por el
+// bug de z-index que dejaba la cabecera clicable sobre el modal)
+$('enrollExit').addEventListener('click', () => backToLobby());
+// Diagnóstico de audio 3D (sampleRate/canales/prueba de oído) en pestaña aparte
+$('diagBtn').addEventListener('click', () => window.open('/static/diag.html', '_blank'));
 
 $('muteBtn').addEventListener('click', () => {
   state.muted = !state.muted;
   const btn = $('muteBtn');
   btn.classList.toggle('muted', state.muted);
   btn.setAttribute('aria-pressed', String(state.muted));
-  btn.textContent = state.muted ? '🔇' : '🎙️';
+  ui.refreshMeStatus();   // el strip explica el estado: silenciado / turno / escuchando
   if (state.micNodes?.stream) {
     state.micNodes.stream.getAudioTracks().forEach((track) => {
       track.enabled = !state.muted;

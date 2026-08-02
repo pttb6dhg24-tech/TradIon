@@ -479,6 +479,31 @@ SVO↔SOV lo aprende el transformer (atención cruzada), no reglas manuales.
   '¡Ahora bien!' (NLLB con entradas de 1 palabra; los topes del decoder acotan la
   longitud, no la semántica — valorar glosario de muletillas si molesta en mesa).
 
+- **2026-08-02 (3) — Auditoría de UI (a petición del arquitecto) + lote completo aplicado.**
+  Revisión visual real a 375×812 con mesa simulada (3 comensales, turno, parciales,
+  modales), verificada con capturas antes/después. Bugs corregidos: **(1) la cabecera
+  sticky (z-index 999) flotaba encendida y clicable POR ENCIMA de los modales
+  (z-index 30)** → modales a 1000 y toast a 1100; al taparla se perdía la única
+  salida de la calibración, así que **(2) el modal de enroll gana un botón «Volver
+  al lobby»** (antes, quien no pasara la calibración quedaba atrapado en el bucle de
+  reintentos). **(3) El plano rotaba la ficha entera** (la 'R' boca abajo, la '지'
+  tumbada, etiquetas cayendo en posiciones distintas según el ángulo) → solo gira la
+  «nariz» en su contenedor `.seat-rot`; inicial y nombre siempre derechos y el
+  nombre siempre debajo. Mejoras: **(4) el turno de palabra por fin es visible** —
+  chip del dueño resaltado (`.chip.floor`) con auto-scroll a la vista, y el strip
+  inferior convertido en **línea de estado contextual** (🔇 silenciado / ⏳ «Habla
+  {nombre} — espera tu turno» / 🎤 «Tu turno» / «Te escucho…»), sin pisar
+  transcripciones vivas (parcial/final caducan a estado, 7 s/6 s); antes el floor
+  descartaba tu voz SIN ningún aviso y «Te escucho…» se mostraba hasta silenciado.
+  **(5)** Icono del mute unificado a 🎙️ con barra CSS (el 🔇 se leía como «no oigo a
+  los demás»). **(6)** Botón 🎧 en el dock (sustituye al fantasma) que abre
+  /static/diag.html. **(7)** Estado vacío del feed («Habla y verás aquí la
+  conversación traducida», CSS `:empty`). **(8)** Accesibilidad: `role="dialog"`
+  + `aria-modal` + `aria-labelledby` en los 3 modales, `aria-label` automático en
+  botones de solo-icono (vía data-i18n-title). **(9)** `toast(…, 'info')` sin alarma
+  roja para mensajes informativos («Voz calibrada ✓»), y texto fallback del
+  plan_hint corregido («En la su voz…»). 6 claves i18n nuevas ×3 idiomas.
+
 ## 🔗 Fuentes
 
 - Referencia integral: https://github.com/QuentinFuxa/WhisperLiveKit · Topología: https://github.com/niedev/RTranslator
