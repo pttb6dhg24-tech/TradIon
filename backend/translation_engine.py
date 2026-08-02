@@ -139,16 +139,26 @@ class TextTranslator:
     _SENT_SPLIT = re.compile(r"(?<=[.!?…])\s+")
 
     def translate(self, text: str, src_lang: str, tgt_lang: str) -> str:
-        """Síncrona (tests y scripts). En el servidor usa translate_async()."""
+        """Síncrona (tests y scripts). En el servidor usa translate_async().
+
+        Se traduce ORACIÓN A ORACIÓN: NLLB es un modelo de una sola oración (model
+        card oficial) y con entradas multi-frase OMITE oraciones enteras — visto en
+        producción en la Victus: "Oh that's a good choice. You don't like the
+        cheesecake...?" perdió la primera frase en la traducción. Además, con fuente
+        mono-oración el recorte anti-diálogo aplica limpio en cada pieza."""
         text = text.strip()
         if not text:
             return ""
         src_code, tgt_code = self._resolve_pair(src_lang, tgt_lang)
-        if self.backend == "ct2":
-            out = self._translate_ct2(text, src_code, tgt_code)
-        else:
-            out = self._translate_transformers(text, src_code, tgt_code)
-        return self._strip_invented_dialog(text, out)
+        pieces = [s.strip() for s in self._SENT_SPLIT.split(text) if s.strip()] or [text]
+        outs = []
+        for piece in pieces:
+            if self.backend == "ct2":
+                out = self._translate_ct2(piece, src_code, tgt_code)
+            else:
+                out = self._translate_transformers(piece, src_code, tgt_code)
+            outs.append(self._strip_invented_dialog(piece, out))
+        return " ".join(o for o in outs if o).strip()
 
     def _strip_invented_dialog(self, source: str, translated: str) -> str:
         """NLLB aprendió el formato de subtítulos de su corpus y con frases cortas a
