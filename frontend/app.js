@@ -307,6 +307,7 @@ class WSClient {
     this._fatalMsg = null;
     this._prejoinFails = 0;
     this.floorOwner = null;
+    this.pendingMoves = new Map();   // speaker_id -> move retenido durante un corte
   }
 
   connect() {
@@ -382,6 +383,19 @@ class WSClient {
 
   sendJSON(obj) {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(obj));
+  }
+
+  /** Los 'move' no pueden perderse en silencio: si el WS está caído (micro-corte),
+   *  se retienen y se re-emiten tras el próximo 'joined'. Se retiene SOLO el propio
+   *  asiento y solo mientras se sigue sentado: un arrastre de OTRO hecho durante un
+   *  corte estaría rancio al reconectar (alguien pudo recolocarlo después con la
+   *  mesa viva), y uno posterior a backToLobby no debe viajar a la próxima mesa. */
+  sendMove(payload) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(payload));
+    } else if (state.seated && payload.speaker_id === state.speakerId) {
+      this.pendingMoves.set(payload.speaker_id, payload);
+    }
   }
 
   sendBinary(buf) {
@@ -766,6 +780,13 @@ class TTSPlayer {
     this._dropped.delete(speakerId);
   }
 
+  /** Tras un 'joined' de reconexión: purgar nodos de peers que se fueron mientras
+   *  estábamos desconectados (su peer_left nunca llegó a este cliente). */
+  pruneSpeakers(validIds) {
+    for (const id of [...this.gains.keys()])
+      if (!validIds.has(id)) this.dropSpeaker(id);
+  }
+
   dropSpeaker(speakerId) {
     this._dropped.add(speakerId);
     this.gains.get(speakerId)?.disconnect();
@@ -857,6 +878,7 @@ function handleBinary(buf) {
 const seats = {
   positions: new Map(),   // speaker_id -> {x, y} en [-1,1] (F6: PannerNode x/z)
   _dirty: false,
+  _draggingId: null,      // ficha bajo MI dedo: los peer_moved sobre ella se ignoran
 
   ensure(id) {
     if (!this.positions.has(id)) {
@@ -907,6 +929,7 @@ const seats = {
       ev.preventDefault();
       seat.setPointerCapture(ev.pointerId);
       seat.classList.add('dragging');
+      this._draggingId = seat.dataset.id;
 
       const move = (mv) => {
         const rect = plan.getBoundingClientRect();
@@ -927,12 +950,17 @@ const seats = {
       };
       const up = () => {
         seat.classList.remove('dragging');
+        this._draggingId = null;
         seat.removeEventListener('pointermove', move);
         seat.removeEventListener('pointerup', up);
         seat.removeEventListener('pointercancel', up);
         if (this._dirty) this.render();
         const pos = this.positions.get(seat.dataset.id);
-        if (pos) net.sendJSON({ type: 'move', x: pos.x, y: pos.y, angle: pos.angle });
+        // speaker_id EXPLÍCITO: el plano es colaborativo ("arrastra a cada persona")
+        // — sin él, el servidor aplicaba el arrastre de la ficha de A a la posición
+        // del REMITENTE: B veía moverse a A pero la mesa entera veía moverse a B
+        if (pos) net.sendMove({ type: 'move', speaker_id: seat.dataset.id,
+                                x: pos.x, y: pos.y, angle: pos.angle });
         if (seat.dataset.id === state.speakerId) updateListener();  // me moví YO
       };
       seat.addEventListener('pointermove', move);
@@ -1375,6 +1403,32 @@ function handleMessage(msg) {
       net.floorOwner = msg.floor_owner || null;
       refreshDuckBypass();
       for (const m of msg.room) player?.restoreSpeaker(m.speaker_id);  // roster autoritativo
+      // Poda: quien se fue MIENTRAS estábamos desconectados nunca nos envió su
+      // peer_left — sin esto su asiento y su panner quedaban huérfanos para siempre
+      for (const id of [...seats.positions.keys()])
+        if (!state.room.has(id)) seats.positions.delete(id);
+      player?.pruneSpeakers(new Set(state.room.keys()));
+      // El roster manda: cancelar TODO grace timer pendiente — uno armado antes de
+      // NUESTRO corte dispararía tras reconectar y borraría (y enmudecería vía
+      // _dropped) a un peer que el roster acaba de confirmar como PRESENTE
+      if (state.gracePeriods) {
+        for (const timerId of state.gracePeriods.values()) clearTimeout(timerId);
+        state.gracePeriods.clear();
+      }
+      // Moves retenidos durante el corte (solo el asiento PROPIO): re-aplicar EN
+      // LOCAL (el roster acaba de pisar la posición con la del servidor, más vieja)
+      // y re-emitir con sendMove — si el WS vuelve a caerse en este instante,
+      // sendJSON lo perdería en silencio; sendMove lo re-retiene solo
+      {
+        const pend = [...net.pendingMoves.values()];
+        net.pendingMoves.clear();
+        for (const p of pend) {
+          if (!state.room.has(p.speaker_id)) continue;
+          seats.positions.set(p.speaker_id, { x: p.x, y: p.y, angle: p.angle });
+          positionPanner(p.speaker_id, p);
+          net.sendMove(p);
+        }
+      }
       net.markJoined();
       ui.renderRoom();
       updateListener();                         // el oyente 3D nace en su asiento
@@ -1386,6 +1440,13 @@ function handleMessage(msg) {
         clearTimeout(state.gracePeriods.get(msg.speaker_id));
         state.gracePeriods.delete(msg.speaker_id);
         state.room.set(msg.speaker_id, msg);
+        // El servidor es autoritativo al reunirse: si alguien arrastró su ficha
+        // mientras él estaba en el limbo (move sobre ausente = descartado), la
+        // posición del footprint que trae el peer_joined re-sincroniza a todos
+        if (msg.x !== undefined) {
+          seats.positions.set(msg.speaker_id, { x: msg.x, y: msg.y, angle: msg.angle });
+          positionPanner(msg.speaker_id, msg);
+        }
         ui.renderRoom();
         break; // Cancelado el "dejó la mesa", reconexión invisible
       }
@@ -1395,9 +1456,14 @@ function handleMessage(msg) {
       ui.sysline(t('sys_joined', { name: msg.name, flag: FLAGS[msg.language] || '' }));
       break;
     case 'peer_moved':
+      // Mi dedo manda sobre la ficha que ESTOY arrastrando: aplicar un peer_moved
+      // concurrente aquí lucharía contra el drag; mi pointerup enviará el valor
+      // final y el eco del servidor (peer_moved a TODOS) re-converge la mesa
+      if (seats._draggingId === msg.speaker_id) break;
       if (state.room.has(msg.speaker_id)) {
         seats.positions.set(msg.speaker_id, { x: msg.x, y: msg.y, angle: msg.angle });
         positionPanner(msg.speaker_id, msg);   // suavizado; omnidireccional (sin conos)
+        if (msg.speaker_id === state.speakerId) updateListener();  // me RECOLOCARON a mí
         seats.render();
       }
       break;
@@ -1652,6 +1718,7 @@ function backToLobby(message) {
   state.room.clear();
   seats.clear();
   micBuffer = [];      // onset retenido de ESTA sesión: no debe volcarse en la siguiente
+  net.pendingMoves.clear();   // moves retenidos de ESTA mesa: no viajan a la próxima
   _teardownAudio();
   ui.resetDom();
   const muteBtn = $('muteBtn');
