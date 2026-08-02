@@ -26,7 +26,10 @@ audio:
   vad_threshold: 0.72
   pre_roll_ms: 192                # audio previo al arranque de voz que se conserva (6 ventanas)
   min_speech_ms: 300              # segmentos más cortos se descartan (clics, golpes)
-  segment_close_silence_ms: 400   # silencio que cierra un segmento (rango útil: 300-800)
+  segment_close_silence_ms: 600   # silencio que cierra un segmento (rango útil: 300-800).
+                                  # A 400 troceaba frases con pausas naturales a mitad
+                                  # (Victus: 'And why you don't eat?' + 'cake in the
+                                  # afternoon.' como DOS segmentos -> MT sin contexto)
   segment_max_seconds: 15         # tope duro por segmento
 
 stt:
@@ -92,7 +95,11 @@ room:
   floor:                          # turno de palabra CSMA/CA (anti-crosstalk en mesa física)
     acquire_rms: 0.025            # voz franca necesaria para TOMAR el canal
     hold_rms: 0.012               # histéresis: MANTENERLO es más barato (finales suaves de frase)
-    release_ms: 400               # silencio que libera el turno
+    release_ms: 600               # silencio que libera el turno. INVARIANTE: mantener
+                                  # >= audio.segment_close_silence_ms — si el floor se
+                                  # libera con el segmento aún abierto, otro móvil puede
+                                  # robar el canal en una pausa y el resto de TU frase
+                                  # se pone a cero (media frase perdida)
     max_hold_s: 30                # tope duro anti-inanición (ruido de fondo permanente)
     reacquire_cooldown_s: 2       # cuarentena tras expulsión por max_hold_s (si no, re-toma el canal en el siguiente frame)
   max_speakers: 6

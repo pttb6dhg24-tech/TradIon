@@ -450,6 +450,35 @@ SVO↔SOV lo aprende el transformer (atención cruzada), no reglas manuales.
   re-converge a la mesa); docstring del protocolo actualizado (move colaborativo,
   Bajada con `peer_moved` y campos espaciales).
 
+- **2026-08-02 (2) — Autopsia de la 3ª sesión Victus + lección de epistemología del diag.**
+  La sesión (6 min, conversación real ES↔EN) confirma en producción los arreglos:
+  `MT: formato de diálogo inventado recortado` cazando en vivo (×2), prewarm cargando
+  la voz al terminar el enroll (primer TTS 82-189 ms, sin el pico de 4 s), latencias
+  482-1131 ms, cierre limpio sin caídas. Tres defectos nuevos del log, corregidos:
+  (1) **NLLB omitía oraciones enteras en segmentos multi-frase** («Oh that's a good
+  choice. You don't like...» → la primera frase desaparecía; es un modelo de UNA
+  oración según su model card): `translate()` trocea la fuente por oraciones y
+  traduce CADA una por separado (además el recorte anti-diálogo aplica limpio en
+  fuente mono-oración). (2) **El cierre de segmento a 400 ms troceaba frases con
+  pausas naturales** («And why you don't eat?» + «cake in the afternoon.» como DOS
+  segmentos → MT sin contexto; los fragmentos de la hablante ES: 'Tarde.', 'Del
+  tiempo.'): `segment_close_silence_ms` 400→600 y `floor.release_ms` 400→600 con el
+  INVARIANTE documentado release_ms ≥ segment_close (si el floor se libera con el
+  segmento abierto, otro móvil roba el canal en la pausa y media frase se pone a
+  cero). (3) **Falso negativo del diag.html verificado por el usuario**: con
+  auriculares Bluetooth el veredicto decía «3D IMPOSIBLE (HFP mono)» y sin embargo
+  la voz orbitaba con claridad — el veredicto confundía frecuencia de muestreo con
+  número de canales (hay rutas BT con captura SCO y salida estéreo; la
+  lateralización depende de los CANALES, no de los kHz). Rediseño: **el oído es el
+  veredicto final** — botones de confirmación tras la prueba («se distinguía un
+  lado» / «igual por ambos»); las métricas pasan a pistas preliminares en tono
+  humilde (HFP ⇒ aviso de CALIDAD de llamada y pérdida de matices HRTF, no
+  imposibilidad). Implicación práctica: el Bluetooth puede ser usable para la
+  separación L/R de hablantes en según qué móviles — medir por dispositivo con el
+  diag; el cable sigue dando la calidad completa. Residual conocido: 'bye' →
+  '¡Ahora bien!' (NLLB con entradas de 1 palabra; los topes del decoder acotan la
+  longitud, no la semántica — valorar glosario de muletillas si molesta en mesa).
+
 ## 🔗 Fuentes
 
 - Referencia integral: https://github.com/QuentinFuxa/WhisperLiveKit · Topología: https://github.com/niedev/RTranslator

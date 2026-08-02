@@ -53,6 +53,10 @@ con los auriculares que vayas a usar en la mesa.</p>
   <button id="bL" class="alt" disabled>◀ Tono IZQUIERDA</button>
   <button id="bR" class="alt" disabled>Tono DERECHA ▶</button>
   <button id="bO" class="alt" disabled>↻ Voz orbitando (HRTF)</button>
+  <p class="sub" style="margin-top:10px">¿Qué has oído? <b>Tu oído es el veredicto final</b> —
+  las métricas de arriba solo orientan.</p>
+  <button id="earYes" disabled>✅ Se distinguía un lado / giraba</button>
+  <button id="earNo" class="alt" disabled>❌ Sonaba igual por ambos lados</button>
 </section>
 
 <section>
@@ -102,19 +106,35 @@ async function dispositivos(tabla) {
   } catch (e) { /* labels requieren permiso: silencioso */ }
 }
 
+let earResult = null;   // true = oído confirma estéreo; false = oído confirma mono
+
 function veredicto() {
   const v = document.getElementById('veredicto');
   if (!conMic) { v.textContent = 'Ejecuta el paso 2.'; return; }
-  const problemas = [];
-  if (conMic.sampleRate <= 24000)
-    problemas.push('⛔ <b>sampleRate ' + conMic.sampleRate + ' Hz con el micro abierto</b>: firma del perfil Bluetooth HFP (mono, telefonía). El 3D es IMPOSIBLE en esta ruta. Usa auriculares de CABLE.');
-  if (conMic.maxChannelCount < 2)
-    problemas.push('⛔ <b>La salida reporta 1 canal</b>: ruta mono. Sin estéreo no hay 3D.');
-  if (sinMic && conMic.sampleRate < sinMic.sampleRate)
-    problemas.push('⚠️ La calidad BAJÓ al abrir el micrófono (' + sinMic.sampleRate + ' → ' + conMic.sampleRate + ' Hz): el sistema degradó la ruta de audio por la captura.');
-  if (!problemas.length)
-    problemas.push('✅ Métricas compatibles con estéreo. La prueba DEFINITIVA es el paso 3: si el tono IZQUIERDA se oye solo a la izquierda, el 3D funciona aquí. Si suena por ambos lados igual, este navegador colapsa la página a mono con el micro abierto (bug conocido de iOS Safari) — prueba con auriculares de cable y reporta el resultado.');
-  v.innerHTML = problemas.join('<br><br>');
+  const lineas = [];
+
+  // EL OÍDO MANDA: las métricas solo orientan. Un sampleRate de telefonía (HFP)
+  // reduce la CALIDAD (banda estrecha) pero NO implica mono — hay rutas Bluetooth
+  // donde la captura va por SCO y la salida sigue en estéreo, y la lateralización
+  // depende de los CANALES, no de los kHz (verificado en prueba real: veredicto
+  // anterior decía "imposible" y la voz orbitaba con claridad).
+  if (earResult === true) {
+    lineas.push('✅ <b>Tu oído confirma que el 3D FUNCIONA en esta ruta.</b> La separación izquierda/derecha (la clave para distinguir hablantes en la mesa) está operativa.');
+    if (conMic.sampleRate <= 24000)
+      lineas.push('⚠️ Eso sí: sampleRate ' + conMic.sampleRate + ' Hz = ruta de telefonía (HFP). El TTS sonará con calidad de llamada (banda estrecha) y los matices finos del HRTF (delante/detrás, altura) se pierden. Con auriculares de CABLE tendrás la calidad completa.');
+  } else if (earResult === false) {
+    lineas.push('⛔ <b>Tu oído confirma ruta MONO</b>: los dos lados suenan igual. El 3D no puede funcionar aquí. Prueba con auriculares de cable; si aun así suena igual por ambos lados, es el colapso a mono de este navegador con el micrófono abierto (bug conocido de iOS Safari).');
+  } else {
+    // Sin confirmación de oído todavía: pistas preliminares, en tono humilde
+    if (conMic.maxChannelCount < 2)
+      lineas.push('⚠️ La salida reporta 1 canal: probable ruta mono. <b>Confírmalo con el paso 3</b> — algunos navegadores reportan mal este valor.');
+    if (conMic.sampleRate <= 24000)
+      lineas.push('⚠️ sampleRate ' + conMic.sampleRate + ' Hz con el micro abierto: firma de la ruta de telefonía Bluetooth (HFP). La CALIDAD será reducida, pero el estéreo puede sobrevivir. <b>La prueba de oído del paso 3 es la que decide.</b>');
+    if (sinMic && conMic.sampleRate < sinMic.sampleRate)
+      lineas.push('⚠️ La calidad bajó al abrir el micrófono (' + sinMic.sampleRate + ' → ' + conMic.sampleRate + ' Hz): el sistema degradó la ruta por la captura.');
+    lineas.push('🎧 Haz la prueba de oído del paso 3 y pulsa el botón que corresponda: <b>ese será el veredicto</b>.');
+  }
+  v.innerHTML = lineas.join('<br><br>');
 }
 
 function tono(pan) {
@@ -165,12 +185,14 @@ document.getElementById('b2').onclick = async () => {
   if (s.sampleRate) fila(t2, 'mic sampleRate', s.sampleRate + ' Hz',
                          s.sampleRate <= 16000 ? 'warn' : '');
   await dispositivos(t2);
-  for (const id of ['bL', 'bR', 'bO']) document.getElementById(id).disabled = false;
+  for (const id of ['bL', 'bR', 'bO', 'earYes', 'earNo']) document.getElementById(id).disabled = false;
   veredicto();
 };
 document.getElementById('bL').onclick = () => tono(-1);
 document.getElementById('bR').onclick = () => tono(1);
 document.getElementById('bO').onclick = orbita;
+document.getElementById('earYes').onclick = () => { earResult = true; veredicto(); };
+document.getElementById('earNo').onclick = () => { earResult = false; veredicto(); };
 </script>
 </body>
 </html>
