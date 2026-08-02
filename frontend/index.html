@@ -65,18 +65,18 @@
 
     <footer class="dock">
       <button id="planBtn" class="dock-side" data-i18n-title="plan_title">🪑</button>
-      <button id="muteBtn" class="mic muted" aria-pressed="true" data-i18n-title="mute_title">🔇</button>
+      <button id="muteBtn" class="mic muted" aria-pressed="true" data-i18n-title="mute_title">🎙️</button>
       <div id="muteTip" class="mute-tip hidden" data-i18n="mute_tip">🎤 Pulsa para que te escuchen</div>
-      <span class="dock-side dock-ghost"></span>
+      <button id="diagBtn" class="dock-side" data-i18n-title="diag_title">🎧</button>
     </footer>
   </section>
 
   <!-- ============ MODAL: CONFIGURACIÓN DE LA MESA (plano radial 2D) ============ -->
-  <div id="planModal" class="modal hidden">
+  <div id="planModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="planTitle">
     <div class="modal-card">
-      <h2 data-i18n="plan_title">Configuración de la mesa</h2>
-      <p class="modal-hint" data-i18n="plan_hint">Arrastra a cada persona a su sitio real alrededor de la mesa. En la
-        su voz sonará desde esa dirección (audio 3D).</p>
+      <h2 id="planTitle" data-i18n="plan_title">Configuración de la mesa</h2>
+      <p class="modal-hint" data-i18n="plan_hint">Arrastra a cada persona a su sitio real alrededor de la mesa:
+        su voz sonará desde esa dirección (audio 3D, mejor con auriculares).</p>
       <div id="plan" class="plan">
         <div class="plan-table"></div>
       </div>
@@ -85,21 +85,25 @@
   </div>
 
   <!-- ============ MODAL: CALIBRACIÓN DE VOZ (enroll multi-paso con ASR) ============ -->
-  <div id="enrollModal" class="modal hidden">
+  <div id="enrollModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="enrollTitle">
     <div class="modal-card">
-      <h2 data-i18n="enroll_title">Calibración de voz</h2>
+      <h2 id="enrollTitle" data-i18n="enroll_title">Calibración de voz</h2>
       <p class="modal-step" id="enrollStep"></p>
       <p class="modal-hint" id="enrollHint" data-i18n="enroll_hint">Lee esta frase en voz alta y natural:</p>
       <p class="enroll-prompt" id="enrollPrompt"></p>
       <button id="enrollStart" class="modal-close" data-i18n="enroll_start">Comenzar a hablar</button>
       <p id="enrollListening" class="enroll-listening hidden">Te escuchamos…</p>
+      <!-- Salida SIEMPRE visible: sin ella, quien no logre pasar la calibración
+           quedaba atrapado en el bucle de reintentos (el Salir de la cabecera
+           solo era alcanzable por el antiguo bug de z-index) -->
+      <button id="enrollExit" class="modal-exit" data-i18n="enroll_exit">Volver al lobby</button>
     </div>
   </div>
 
   <!-- ============ MODAL: ASÍ SONARÁS (voz por idioma destino, tras calibrar) ============ -->
-  <div id="voiceModal" class="modal hidden">
+  <div id="voiceModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="voiceTitle">
     <div class="modal-card">
-      <h2 data-i18n="voice_card_title">Así sonarás en la mesa</h2>
+      <h2 id="voiceTitle" data-i18n="voice_card_title">Así sonarás en la mesa</h2>
       <p class="modal-hint" data-i18n="voice_card_hint">Tu voz real solo la oyen los de tu idioma. Para el resto, hablarás con estas voces (elegidas según tu tono). Escúchalas y cámbialas si quieres.</p>
       <div id="voiceList" class="voice-list"></div>
       <button id="voiceEnter" class="modal-close" data-i18n="voice_enter">Entrar a la mesa</button>

@@ -188,6 +188,8 @@ html, body {
   font-weight: 700; font-size: .85rem; color: #08131f;
 }
 .chip.speaking { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 55%, transparent); }
+/* Dueño del turno de palabra (floor token): visible aunque no esté sonando */
+.chip.floor { border-color: var(--accent); background: #12201f; }
 
 .feed {
   flex: 1;
@@ -195,6 +197,16 @@ html, body {
   display: flex; flex-direction: column; gap: 12px;
   padding: 8px 16px;
   scroll-behavior: smooth;
+}
+/* Estado vacío: orienta los primeros segundos en vez de un negro absoluto */
+.feed:empty::before {
+  content: attr(data-empty);
+  margin: auto;
+  max-width: 260px;
+  text-align: center;
+  color: var(--dim);
+  font-size: .92rem;
+  line-height: 1.6;
 }
 
 .bubble {
@@ -270,6 +282,18 @@ html, body {
   border-color: var(--danger);
   box-shadow: 0 0 0 5px color-mix(in srgb, var(--danger) 35%, transparent);
 }
+/* Barra de "micro tachado": el icono es SIEMPRE 🎙️ (es un mute de MICRÓFONO;
+   el antiguo 🔇 se leía como "no oigo a los demás") */
+.mic.muted::after {
+  content: '';
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 56px; height: 5px;
+  background: var(--danger);
+  border-radius: 3px;
+  transform: translate(-50%, -50%) rotate(-45deg);
+  pointer-events: none;
+}
 
 /* Tooltip "Start muted" tipo Zoom */
 .mute-tip {
@@ -323,7 +347,16 @@ html, body {
   backdrop-filter: blur(4px);
   display: flex; align-items: center; justify-content: center;
   padding: 20px;
-  z-index: 30;
+  /* SIEMPRE por encima de la cabecera sticky (999): antes la barra superior
+     quedaba encendida y clicable flotando sobre el modal atenuado */
+  z-index: 1000;
+}
+.modal-exit {
+  background: none; border: none;
+  color: var(--dim); font-size: .9rem;
+  padding: 6px; cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 .modal-card {
   width: min(420px, 100%);
@@ -381,6 +414,13 @@ html, body {
   font-size: .68rem; font-weight: 600; color: var(--dim);
   white-space: nowrap;
 }
+/* Solo la "nariz" gira con la orientación: la ficha, su inicial y la etiqueta
+   quedan SIEMPRE derechas (antes la 'R' salía boca abajo y los nombres caían
+   en posiciones distintas según el ángulo) */
+.seat .seat-rot {
+  position: absolute; inset: 0;
+  pointer-events: none;
+}
 .seat .seat-nose {
   position: absolute;
   top: -8px;
@@ -424,6 +464,8 @@ html, body {
   padding: 12px 18px;
   max-width: 90%;
   font-size: .9rem;
-  z-index: 40;
+  z-index: 1100;                 /* por encima de los modales (1000) */
   animation: pop .18s ease;
 }
+/* Mensajes informativos (p. ej. "Voz calibrada ✓"): sin alarma roja */
+.toast.info { background: var(--card); border-color: var(--line); }
