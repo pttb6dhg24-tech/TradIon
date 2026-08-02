@@ -424,6 +424,32 @@ SVO↔SOV lo aprende el transformer (atención cruzada), no reglas manuales.
   propio (compartir el único worker de TTS metía 2-4 s de head-of-line a hablantes
   activos) y _norm del dedup solo con guion+espacio ('-5 grados.' es un número).
 
+- **2026-08-02 — Auditoría del subsistema de asientos: la mesa es ahora COLABORATIVA
+  y convergente.** Pregunta del arquitecto: ¿la posición de la mesa se configura, se
+  propaga a todos y es coherente, sin carreras ni pérdidas? Respuesta: NO lo era —
+  el defecto raíz es que el plano permitía arrastrar CUALQUIER ficha (el hint lo
+  promete: «arrastra a cada persona») pero el protocolo `move` no llevaba
+  destinatario: el servidor aplicaba el arrastre al REMITENTE. B veía moverse a A;
+  la mesa entera veía moverse a B. Rediseño (verificado por simulación de
+  convergencia con 3 clientes): `move` lleva `speaker_id` del destinatario (sin él,
+  el propio: compat), el servidor lo aplica a ESE cliente + su footprint y difunde
+  `peer_moved` a TODOS — el eco incluido al que arrastró: con `exclude`, dos
+  arrastres concurrentes de la misma ficha dejaban al GANADOR del last-write como
+  único desincronizado. El cliente ignora ecos de la ficha bajo su dedo
+  (`seats._draggingId`) y, si el movido soy YO, recoloco mi listener 3D.
+  Anti-pérdidas y anti-carreras adicionales (2ª pasada adversarial: 10 hallazgos de
+  2 lentes, refutadores caídos por límite de sesión → verificados manualmente uno a
+  uno contra el código): `sendMove` retiene el move si el WS está caído y lo
+  re-emite tras el `joined` (solo el asiento PROPIO y solo si sigues sentado: el
+  arrastre ajeno retenido estaría rancio y el post-lobby no debe viajar a la mesa
+  siguiente); el `joined` de reconexión cancela TODOS los grace timers (uno armado
+  antes de mi corte borraba y enmudecía vía `_dropped` a un peer que el roster
+  confirmaba presente) y poda asientos/panners de quien se fue durante mi
+  desconexión; el `peer_joined` que cancela un grace re-sincroniza la posición desde
+  el footprint (un move sobre un ausente se descarta en el servidor: el rejoin
+  re-converge a la mesa); docstring del protocolo actualizado (move colaborativo,
+  Bajada con `peer_moved` y campos espaciales).
+
 ## 🔗 Fuentes
 
 - Referencia integral: https://github.com/QuentinFuxa/WhisperLiveKit · Topología: https://github.com/niedev/RTranslator

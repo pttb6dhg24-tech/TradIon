@@ -34,13 +34,19 @@ PROTOCOLO WebSocket (referencia para el frontend F5):
     5) Texto JSON: {"type":"enrolled"} — el cliente completó las 3 frases: la huella vocal
        acumulada (ref_audio_buffer + ref_text) se vuelca a un WAV temporal para F5-TTS y
        SOLO entonces se difunde peer_joined (nadie ve a un hablante sin voz clonable).
-    6) Texto JSON: {"type":"move","x","y","angle"} — asiento/orientación en la mesa
-       ([-1,1] + radianes): se re-difunde como peer_moved para el audio 3D de los demás.
+    6) Texto JSON: {"type":"move","speaker_id","x","y","angle"} — recoloca en la mesa a
+       CUALQUIER comensal (plano colaborativo; sin speaker_id se asume el propio),
+       [-1,1] + radianes; se difunde como peer_moved a TODOS (eco incluido al que
+       arrastró: converge los arrastres concurrentes; el destinatario recoloca su
+       listener 3D si lo movió otro; el cliente ignora ecos de la ficha que arrastra).
     7) Texto JSON: {"type":"leave"} — salida limpia: purga inmediata de la sesión en RAM
        Y de la huella vocal (buffer + WAV temporal en disco).
   Bajada (servidor -> cliente):
-    - {"type":"joined","speaker_id","room":[{speaker_id,name,language},...]}
-    - {"type":"peer_joined"|"peer_left","speaker_id","name","language"}
+    - {"type":"joined","speaker_id","room":[{speaker_id,name,language,x,y,angle},...],
+       "floor_owner"} — x/y/angle: asiento (hexagonal inicial o del footprint)
+    - {"type":"peer_joined","speaker_id","name","language","x","y","angle"}
+    - {"type":"peer_left","speaker_id","name","language"}
+    - {"type":"peer_moved","speaker_id","x","y","angle"} — a TODOS (eco incluido)
     - {"type":"partial","speaker_id","name","language","text"} — hipótesis EN VIVO del
       segmento abierto (ventana deslizante del STT); solo UI, jamás se traduce  (a todos)
     - {"type":"subtitle","speaker_id","name","language","text","latency_ms":{"stt":..}}   (a todos)
@@ -932,6 +938,17 @@ class TradIonServer:
                             self._send_json(client, {"type": "error",
                                                      "message": f"Voz inválida: {voice_id!r} para {lang!r}"})
                     elif msg_type == "move" and client is not None:
+                        # Mesa COLABORATIVA: el plano dice "arrastra a CADA persona",
+                        # así que el move lleva el speaker_id del DESTINATARIO. Sin
+                        # él, el arrastre de la ficha de A se aplicaba al REMITENTE:
+                        # B veía moverse a A pero la mesa entera veía moverse a B.
+                        # Sin speaker_id (clientes antiguos) se asume el propio.
+                        raw_target = data.get("speaker_id")
+                        target = client
+                        if isinstance(raw_target, str) and raw_target != client.speaker_id:
+                            target = self.clients.get(raw_target)
+                            if target is None:
+                                continue   # se fue entre el arrastre y el mensaje
                         try:
                             nx = float(data.get("x", 0.0))
                             ny = float(data.get("y", 0.0))
@@ -942,17 +959,24 @@ class TradIonServer:
                             # clientes (y en cada joined futuro vía footprint).
                             # Solo coordenadas finitas y acotadas a la mesa.
                             if all(map(math.isfinite, (nx, ny, na))):
-                                client.x = max(-1.0, min(1.0, nx))
-                                client.y = max(-1.0, min(1.0, ny))
-                                client.angle = max(-2 * math.pi, min(2 * math.pi, na))
+                                target.x = max(-1.0, min(1.0, nx))
+                                target.y = max(-1.0, min(1.0, ny))
+                                target.angle = max(-2 * math.pi, min(2 * math.pi, na))
                         except (TypeError, ValueError):
                             pass
-                        if client.token and client.token in self.footprints:
-                            self.footprints[client.token].update(
-                                x=client.x, y=client.y, angle=client.angle)
+                        if target.token and target.token in self.footprints:
+                            self.footprints[target.token].update(
+                                x=target.x, y=target.y, angle=target.angle)
+                        # Eco a TODOS, incluido el que arrastró: con exclude, dos
+                        # arrastres concurrentes de la misma ficha dejaban al GANADOR
+                        # del last-write como único cliente desincronizado (recibía el
+                        # peer_moved del perdedor y nunca el suyo). El cliente ignora
+                        # los peer_moved de la ficha que tiene bajo el dedo, así el
+                        # eco no lucha contra el drag y la mesa converge al orden del
+                        # servidor. El destinatario recoloca su listener 3D si lo
+                        # movió otro comensal.
                         self._broadcast(
-                            {"type": "peer_moved", "speaker_id": client.speaker_id, "x": client.x, "y": client.y, "angle": client.angle},
-                            exclude=client.speaker_id,
+                            {"type": "peer_moved", "speaker_id": target.speaker_id, "x": target.x, "y": target.y, "angle": target.angle},
                         )
                     elif msg_type == "leave" and client is not None:
                         # Salida limpia solicitada por el cliente: el finally ejecuta
