@@ -400,6 +400,8 @@ class TradIonServer:
             # reaparece donde estaba, no en la plaza hexagonal por defecto)
             if "x" in fp:
                 client.x, client.y, client.angle = fp["x"], fp["y"], fp["angle"]
+            # F11: la huella de locutor también sobrevive (sin recomputar)
+            self.engine.set_speaker_reference_embedding(speaker_id, fp.get("spk_emb"))
             # Sus voces ya están decididas: cargar los ONNX de fondo desde ya
             self.tts.prewarm_voices(client)
         loop = asyncio.get_running_loop()
@@ -852,6 +854,7 @@ class TradIonServer:
                             client.is_enrolled = True
 
                             # F9: matcher biométrico — f0 mediano del audio del enroll
+                            spk_emb = None
                             if client.ref_audio_buffer:
                                 from backend.voice_catalog import estimate_f0
                                 pcm = bytes(client.ref_audio_buffer)
@@ -860,6 +863,10 @@ class TradIonServer:
                                 loop = asyncio.get_running_loop()
                                 client.user_f0 = await loop.run_in_executor(
                                     None, estimate_f0, samples, 16000)
+                                # F11: huella de LOCUTOR para el speaker-gate (la misma
+                                # captura del enroll sirve de referencia de identidad)
+                                spk_emb = await self.engine.set_speaker_reference(
+                                    client.speaker_id, samples)
                             # La voz del PROPIO idioma no la oye nadie (los de tu idioma oyen
                             # tu voz real): se asigna una voz afín por f0 para CADA idioma
                             # DESTINO, y el cliente la confirma/cambia antes de entrar a la mesa
@@ -918,6 +925,7 @@ class TradIonServer:
                                     "x": client.x, "y": client.y, "angle": client.angle,
                                     "speaker_id": client.speaker_id,   # identidad estable por dispositivo
                                     "last_seg": 0,   # segment_id más alto difundido (monotonía)
+                                    "spk_emb": spk_emb,   # huella de locutor (F11, o None)
                                 }
                             
                             logger.info("+ %s (%s, %s) completó calibración", client.name, client.language, client.speaker_id)

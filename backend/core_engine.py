@@ -28,8 +28,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
-from collections import deque
+from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
@@ -110,6 +111,29 @@ def _normalize_chunk(data: bytes | bytearray | memoryview | np.ndarray) -> np.nd
     raise AudioFormatError(f"dtype de audio no soportado: {chunk.dtype}")
 
 
+_REPEAT_RUN = re.compile(r"(.)\1{9,}")   # 10+ repeticiones seguidas del mismo carácter
+
+
+def _looks_degenerate(text: str) -> bool:
+    """Bucle de decodificación de Whisper que se cuela por logprob: 'Hmmmmm…' de 198
+    caracteres (Victus, seg 41: se tradujo y se SINTETIZARON 13 s de emes) o
+    '¿Hola? ¿Hola? ¿Hola? ¿Hola? ¿Hola?'. Tres firmas baratas:
+    racha de un mismo carácter, diversidad de caracteres ínfima, o una misma
+    palabra dominando la locución (≥5 veces y ≥80% de los tokens — 'sí sí sí sí'
+    real de 4 repeticiones sigue pasando)."""
+    compact = text.replace(" ", "").lower()
+    if _REPEAT_RUN.search(compact):
+        return True
+    if len(compact) >= 20 and len(set(compact)) <= 3:
+        return True
+    tokens = re.findall(r"\w+", text.lower())
+    if len(tokens) >= 5:
+        _, freq = Counter(tokens).most_common(1)[0]
+        if freq >= 5 and freq / len(tokens) >= 0.8:
+            return True
+    return False
+
+
 class VoiceSession:
     """Estado de UN hablante: VAD propio (C3), segmentador y cola de resultados.
 
@@ -160,6 +184,7 @@ class VoiceSession:
         self._stt_tasks: set[asyncio.Task] = set()
         self._prev_stt: Optional[asyncio.Task] = None
         self._closed = False
+        self.ref_embedding: Optional[np.ndarray] = None   # F11: huella de locutor (enroll)
 
     # ---------- API pública ----------
 
@@ -264,6 +289,11 @@ class VoiceSession:
             return None
         segment_windows = self._segment
         speech_ms = self._speech_ms
+        # Métricas del segmento CERRADO para el speaker-gate (F11): voz REAL (sin
+        # pre-roll ni silencios) y cola de silencio de cierre — el clip completo
+        # llega a ser ~70% relleno y decidir identidad sobre él era injusto
+        self._closed_speech_ms = speech_ms
+        self._closed_tail_ms = self._silence_ms
         self._segment = []
         self._in_speech = False
         self._speech_ms = 0.0
@@ -305,6 +335,26 @@ class VoiceSession:
 
     async def _run_partial(self, audio: np.ndarray, utterance_id: int) -> None:
         loop = asyncio.get_running_loop()
+        # F11 — el gate también cubre los PARCIALES: sin esto, la voz del vecino
+        # rechazada en el final se difundía igualmente EN VIVO hasta 15 s con la
+        # atribución del dueño del micro, y nada la retractaba (el final vacío no
+        # se difunde). La ventana del parcial exige >=800 ms de voz real
+        # (partial_min_speech_ms), así que hay material para decidir; de paso se
+        # ahorra el STT del modelo de parciales en los rechazos.
+        gate = self.engine.speaker_gate
+        if gate.available and self.ref_embedding is not None:
+            sim = None
+            try:
+                sim = await loop.run_in_executor(gate.executor, gate.score,
+                                                 audio, self.ref_embedding)
+            except Exception:
+                logger.debug("(%s) speaker-gate parcial falló (fail-open)",
+                             self.speaker_id, exc_info=True)
+            if sim is not None and gate.decide(sim) == "reject":
+                self._partial_inflight = False   # ¡liberar SIEMPRE el cerrojo!
+                logger.info("(%s) speaker-gate: parcial DESCARTADO — voz ajena "
+                            "(sim %.2f)", self.speaker_id, sim)
+                return
         try:
             text, stt_ms = await loop.run_in_executor(
                 self.engine.partial_executor, self.engine.transcribe_partial_sync,
@@ -326,16 +376,55 @@ class VoiceSession:
         self._segment_seq += 1
         prev = self._prev_stt
         task = asyncio.get_running_loop().create_task(
-            self._run_stt(audio, self._segment_seq, prev)
+            self._run_stt(audio, self._segment_seq, prev,
+                          speech_ms=getattr(self, "_closed_speech_ms", 0.0),
+                          tail_ms=getattr(self, "_closed_tail_ms", 0.0))
         )
         self._prev_stt = task
         self._stt_tasks.add(task)             # referencia viva: evita que el GC cancele la tarea
         task.add_done_callback(self._stt_tasks.discard)
 
     async def _run_stt(self, audio: np.ndarray, segment_id: int,
-                       prev: Optional[asyncio.Task]) -> None:
+                       prev: Optional[asyncio.Task], speech_ms: float = 0.0,
+                       tail_ms: float = 0.0) -> None:
         loop = asyncio.get_running_loop()
         seconds = audio.size / self._sample_rate
+
+        # F11 — Speaker Gate: si la firma de locutor del segmento no se parece a la
+        # huella del dueño de ESTE micro, es voz ajena (cross-captura del mismo
+        # idioma, que la guardia LID no puede ver): descartar ANTES de gastar GPU.
+        # Zona gris: pasa pero se loguea (calibración en mesa sin perder voz).
+        # El suelo min_speech_s se compara contra la VOZ REAL del segmento (el clip
+        # completo incluye pre-roll + cola de 600 ms de silencio: llegaba a ser ~70%
+        # relleno y el gate decidía —incluido el REJECT destructivo— con 300 ms de
+        # habla), y al embedding se le recorta esa cola muerta.
+        gate = self.engine.speaker_gate
+        if (gate.available and self.ref_embedding is not None
+                and int(speech_ms * 16) >= gate.min_samples):
+            try:
+                tail_samples = int(tail_ms * 16)
+                gate_clip = (audio[:-tail_samples]
+                             if 0 < tail_samples < audio.size else audio)
+                sim = await loop.run_in_executor(gate.executor, gate.score,
+                                                 gate_clip, self.ref_embedding)
+                verdict = gate.decide(sim)
+                if verdict == "reject":
+                    logger.info("(%s) speaker-gate: seg %d DESCARTADO — voz ajena "
+                                "(sim %.2f < %.2f)", self.speaker_id, segment_id,
+                                sim, gate.reject)
+                    if prev is not None:      # respetar la publicación EN ORDEN
+                        with suppress(Exception):
+                            await prev
+                    await self.results.put(TranscriptionResult(
+                        self.speaker_id, segment_id, self.language, "", seconds, 0.0))
+                    return
+                if verdict == "gray":
+                    logger.info("(%s) speaker-gate: seg %d zona GRIS (sim %.2f) — pasa",
+                                self.speaker_id, segment_id, sim)
+            except Exception:
+                logger.exception("(%s) speaker-gate falló: el segmento pasa (fail-open)",
+                                 self.speaker_id)
+
         self.engine.heavy_pending += 1
         try:
             text, stt_ms = await loop.run_in_executor(
@@ -372,6 +461,12 @@ class CoreEngine:
             )
         self.allowed_languages = set(self.settings["languages"]["allowed"])
         stt_workers = int(stt_cfg.get("workers", 2))
+
+        # F11 — Speaker Gate (verificación de hablante contra la huella del enroll).
+        # Import tardío del módulo: la dependencia sherpa-onnx es opcional y el
+        # gate es fail-open (se desactiva solo con un aviso si algo falta)
+        from backend.speaker_gate import SpeakerGate
+        self.speaker_gate = SpeakerGate(self.settings)
 
         whisper_dir = resolve_dir(Path(self.settings["paths"]["models_dir"]) / "whisper")
         whisper_kwargs = dict(
@@ -490,6 +585,29 @@ class CoreEngine:
             await session.close()
             self._vad_pool.append(session._vad)        # reciclar: ya quedó reseteada en close()
 
+    async def set_speaker_reference(self, speaker_id: str,
+                                    audio_16k: np.ndarray) -> Optional[list]:
+        """F11: calcula y fija la huella de locutor de una sesión (tras el enroll).
+        Devuelve el embedding como lista (para persistirlo en el footprint) o None."""
+        session = self._sessions.get(speaker_id)
+        gate = self.speaker_gate
+        if session is None or not gate.available or audio_16k.size < gate.min_samples:
+            return None
+        loop = asyncio.get_running_loop()
+        emb = await loop.run_in_executor(gate.executor, gate.embed, audio_16k)
+        session.ref_embedding = emb
+        logger.info("(%s) huella de locutor fijada (%d dims)", speaker_id, emb.size)
+        return emb.tolist()
+
+    def set_speaker_reference_embedding(self, speaker_id: str, embedding) -> None:
+        """F11: restaura una huella ya calculada (reconexión vía footprint)."""
+        session = self._sessions.get(speaker_id)
+        if session is None or not self.speaker_gate.available or embedding is None:
+            return
+        emb = np.asarray(embedding, dtype=np.float32)
+        norm = float(np.linalg.norm(emb))
+        session.ref_embedding = emb / norm if norm > 0 else emb
+
     def transcribe_sync(self, audio: np.ndarray, expected_language: str,
                         force_language: bool = False) -> tuple[str, float]:
         """Corre dentro del ThreadPoolExecutor. Acepta ndarray float32 16 kHz en memoria (A3).
@@ -559,6 +677,9 @@ class CoreEngine:
                 if seg_text.lower().strip("¡!¿?.") in self._hallucination_blacklist:
                     dropped["blacklist"] = dropped.get("blacklist", 0) + 1
                     continue
+                if _looks_degenerate(seg_text):
+                    dropped["degenerado"] = dropped.get("degenerado", 0) + 1
+                    continue
                 valid_texts.append(seg_text)
             if dropped:
                 logger.info("Filtros STT (%s): descartes %s", expected_language, dropped)
@@ -598,6 +719,7 @@ class CoreEngine:
         self.vad_executor.shutdown(wait=wait)
         if self.partial_executor is not None:
             self.partial_executor.shutdown(wait=wait)
+        self.speaker_gate.shutdown()
 
 
 # ---------- smoke test offline ----------

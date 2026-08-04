@@ -588,6 +588,40 @@ SVO↔SOV lo aprende el transformer (atención cruzada), no reglas manuales.
   zona gris: comparar energía/instante de llegada del mismo evento entre
   dispositivos (el micro del hablante real capta antes y más fuerte).
 
+- **2026-08-04 (3) — F11 implementado + verificación adversarial (6 hallazgos, todos
+  corregidos) + autopsia de la 5ª sesión.** El Speaker Gate quedó implementado
+  (backend/speaker_gate.py, integración en _run_stt, referencia en el enroll y en el
+  footprint, scripts de setup/benchmark, apagado por defecto y fail-open) y validado
+  EN LOCAL con el modelo CAM++ real: 11-28 ms/embedding en el M3, mismo hablante
+  0.795, peor par ajeno sintético 0.343. La verificación adversarial (2 lentes)
+  confirmó 6 defectos, corregidos: **(1+3)** el suelo `min_speech_s` medía la
+  duración TOTAL del clip (pre-roll + 600 ms de cola de silencio = hasta ~70%
+  relleno): el gate podía RECHAZAR turnos cortos legítimos del dueño → ahora el
+  segmentador propaga la VOZ REAL (`speech_ms`) y la cola de silencio (`tail_ms`),
+  el suelo compara voz de verdad y al embedding se le recorta la cola muerta;
+  **(2+6)** los PARCIALES esquivaban el gate (la voz del intruso se difundía en
+  vivo hasta 15 s con atribución falsa y nada la retractaba) → el gate corre
+  también antes del STT de parciales (≥800 ms de voz garantizados por
+  partial_min_speech_ms), liberando siempre el cerrojo `_partial_inflight`;
+  **(4)** el benchmark daba luz verde con margen 0.007 sobre voces SINTÉTICAS →
+  veredicto honesto (avisa que los previews son cota inferior y bloquea el GO con
+  margen <0.05) + **modo voces REALES** (`bench_speaker_gate.py voz1.wav voz2.wav`:
+  matriz de similitudes y umbrales recomendados — probado: recomienda
+  accept 0.51/reject 0.30 con es-ald vs es-carlfm); **(5)** `tmp.rename` →
+  `tmp.replace` (en Windows, un modelo corrupto previo dejaba el setup en bucle).
+  De la 5ª sesión real (log): la guardia LID v2 en producción — cross-captura
+  es→en descartada (p=1.00 y 0.94) y decenas de «LID dudoso ('is' 0.98) →
+  re-transcripción forzada» salvando el español del micro Bluetooth (banda
+  estrecha ≈ «islandés» para el LID; al quitarse los auriculares BT a mitad de
+  sesión, transcripciones limpias — confirmación empírica: micro BT NO, escuchar
+  por BT sí); tope de temperaturas verificado (la alucinación tardó 2.9 s, no 18);
+  y un hueco nuevo cazado y corregido: **'Hmmmm…' ×198 pasó logprob, se tradujo y
+  se sintetizaron 13 s de emes** → filtro anti-degeneración (racha de carácter,
+  diversidad ínfima, palabra dominante ≥5×/≥80%) con salvaguardas verificadas
+  («sí, sí, sí, sí» real pasa). Propuesta F12 «Tela de araña» (profundidad 3D
+  visual e intuitiva: anillos concéntricos en el plano, lowpass de «aire» por
+  distancia, modos Sutil/Inmersivo) presentada al arquitecto — pendiente de GO.
+
 ## 🔗 Fuentes
 
 - Referencia integral: https://github.com/QuentinFuxa/WhisperLiveKit · Topología: https://github.com/niedev/RTranslator
