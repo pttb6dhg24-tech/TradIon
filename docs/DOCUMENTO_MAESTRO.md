@@ -704,6 +704,27 @@ SVO↔SOV lo aprende el transformer (atención cruzada), no reglas manuales.
   `git reset --hard origin/main` re-apunta al historial nuevo conservando
   `models/`, certificados y configuración (ficheros no rastreados intactos).
 
+- **2026-08-04 (8) — FLOOR v2.2 + lección de la 7ª sesión (una persona, dos
+  perfiles).** El arquitecto probó SOLO, alternando es/en entre iPhone y Mac. Dos
+  conclusiones separadas: **(a) el escenario es indecidible por diseño** — misma
+  voz a distancia similar de ambos micros: ningún árbitro acústico puede saber a
+  qué PERFIL va cada frase; el sistema completo aun así funcionó (la guardia LID
+  ordenó los idiomas descartando lo mal enrutado, conversación fluida a 0.8-1.5 s)
+  y los datos del gate en esta sesión NO miden identidad (misma voz: miden canal
+  del micro) — el gate necesita dos personas para validarse. **(b) Defecto REAL
+  destapado: saturación asimétrica de la puja** — A calibró bajo (vr 0.0266) pero
+  su AGC captura onsets ~4x más fuertes → su puja clavada en el tope «norm 2.50»
+  toda la sesión, ganando contiendas de 2 pujas incluso con voz ajena (y el
+  desempate implícito de max() era por orden alfabético de id). El EMA no
+  alcanzaba porque convergía a la MEDIANA del segmento y las contiendas se deciden
+  con los frames de ARRANQUE. **v2.2**: (1) el EMA converge al
+  `max(mediana, rms de la puja ganadora)` con α=0.3 — las pujas propias de todos
+  los dispositivos convergen a ~1.0 (verificado por simulación con los números del
+  log: A pasa de 2.50 a 1.09 en ~6 frases); (2) cuasi-empates (<0.2) los gana
+  quien pujó ANTES (la llegada acústica de v1 como desempate honesto); (3) las
+  pujas se loguean con su rms («norm N, rms R, M pujas») para diagnóstico. Próxima
+  validación de turnos: con DOS personas.
+
 ## 🔗 Fuentes
 
 - Referencia integral: https://github.com/QuentinFuxa/WhisperLiveKit · Topología: https://github.com/niedev/RTranslator

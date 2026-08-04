@@ -235,7 +235,8 @@ class TradIonServer:
         self.floor_crosstalk_confirmations = int(floor_cfg.get("crosstalk_confirmations", 2))
         self._crosstalk_streak: dict[str, tuple[int, float]] = {}   # id -> (racha, t_último)
         self.floor_last_acquired: dict[str, float] = {}   # id -> monotonic del último grant
-        self._floor_contest: Optional[dict] = None   # {"start", "bids": {id: mejor_norm}}
+        self._floor_win_rms: dict[str, float] = {}   # id -> rms de su última puja ganadora
+        self._floor_contest: Optional[dict] = None   # {"start", "bids": {id: {norm,rms,first}}}
 
         # B1: las huellas vocales temporales viven en models/tmp (no en el tmp del SO) y
         # se BARREN al arrancar: un crash jamás deja audio biométrico huérfano en disco
@@ -328,20 +329,33 @@ class TradIonServer:
                         # Mejor puja VÁLIDA (presente y sin cuarentena): si el mejor
                         # cayó durante la ventana, hereda el subcampeón — antes la
                         # contienda entera se descartaba y nadie recibía el canal
-                        valid = [(n, cid) for cid, n in contest["bids"].items()
+                        valid = [(cid, b) for cid, b in contest["bids"].items()
                                  if cid in self.clients
                                  and now >= self.floor_cooldown_until.get(cid, 0.0)]
                         if valid:
-                            best_norm, winner = max(valid)
+                            # Mejor puja normalizada; los CUASI-EMPATES (<0.2) los
+                            # gana quien pujó ANTES — la ventaja acústica del
+                            # hablante real (v1) sigue siendo el mejor desempate
+                            # cuando la normalización no separa (v2.2: una puja
+                            # saturada en el tope 2.5 ya no gana por orden
+                            # alfabético de ids)
+                            best_norm = max(b["norm"] for _, b in valid)
+                            empatados = [(cid, b) for cid, b in valid
+                                         if best_norm - b["norm"] < 0.2]
+                            winner, wbid = min(empatados,
+                                               key=lambda kv: kv[1]["first"])
                             self.floor_owner = winner
                             self.floor_acquired_at = now
                             self.floor_last_active = now
                             self.floor_last_acquired[winner] = now
+                            # Nivel de ARRANQUE ganador: alimenta la adaptación de
+                            # la calibración (las contiendas se deciden con onsets)
+                            self._floor_win_rms[winner] = wbid["rms"]
                             self._broadcast({"type": "floor_acquired",
                                              "speaker_id": winner})
                             logger.info("Canal tomado por %s (contienda, norm %.2f, "
-                                        "%d pujas)", winner, best_norm,
-                                        len(contest["bids"]))
+                                        "rms %.3f, %d pujas)", winner, wbid["norm"],
+                                        wbid["rms"], len(contest["bids"]))
                 if self.floor_owner is None:
                     continue
                 reason = None
@@ -543,6 +557,7 @@ class TradIonServer:
             self._broadcast({"type": "floor_released", "speaker_id": client.speaker_id})
         self.floor_cooldown_until.pop(client.speaker_id, None)
         self.floor_last_acquired.pop(client.speaker_id, None)
+        self._floor_win_rms.pop(client.speaker_id, None)
         self._crosstalk_streak.pop(client.speaker_id, None)
         logger.info("- %s (%s) — %d en sala", client.name, client.speaker_id, len(self.clients))
 
@@ -624,10 +639,18 @@ class TradIonServer:
         # seguirlo para no dejar al dueño sin poder tomar su propio canal
         self._crosstalk_streak.pop(client.speaker_id, None)
         if result.voiced_rms > 0:
+            # v2.2 — el objetivo del EMA es el nivel de ARRANQUE real (el rms de la
+            # puja que ganó la contienda), no solo la mediana del segmento: las
+            # contiendas se deciden con los frames de onset (más fuertes por el
+            # ataque del AGC) y la mediana sola nunca alcanzaba — la puja del micro
+            # mal calibrado saturaba en el tope 2.5 y ganaba empates para siempre
+            # (medido: iPhone con vr=0.027 clavado en 'norm 2.50' toda la sesión)
+            objetivo = max(result.voiced_rms,
+                           self._floor_win_rms.get(client.speaker_id, 0.0))
             if client.voice_rms > 0:
-                client.voice_rms = 0.8 * client.voice_rms + 0.2 * result.voiced_rms
+                client.voice_rms = 0.7 * client.voice_rms + 0.3 * objetivo
             else:
-                client.voice_rms = result.voiced_rms
+                client.voice_rms = objetivo
             if client.token in self.footprints:
                 self.footprints[client.token]["voice_rms"] = client.voice_rms
 
@@ -899,12 +922,15 @@ class TradIonServer:
                                 norm = min(rms / max(vr, self.floor_acquire_rms), 2.5)
                                 contest = self._floor_contest
                                 if contest is None:
-                                    self._floor_contest = {"start": now_mono,
-                                                           "bids": {client.speaker_id: norm}}
-                                else:
-                                    bids = contest["bids"]
-                                    if norm > bids.get(client.speaker_id, 0.0):
-                                        bids[client.speaker_id] = norm
+                                    contest = {"start": now_mono, "bids": {}}
+                                    self._floor_contest = contest
+                                bid = contest["bids"].get(client.speaker_id)
+                                if bid is None:
+                                    contest["bids"][client.speaker_id] = {
+                                        "norm": norm, "rms": rms, "first": now_mono}
+                                elif norm > bid["norm"]:
+                                    bid["norm"] = norm
+                                    bid["rms"] = rms
                             else:
                                 # Canal ocupado por otro: descartar (crosstalk)
                                 safe_data = bytes(len(pcm))
