@@ -5,91 +5,121 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Licencia-MIT-blue.svg" alt="License MIT">
   <img src="https://img.shields.io/badge/Python-3.10+-blue.svg" alt="Python 3.10+">
-  <img src="https://img.shields.io/badge/Hardware-M_Series_|_NVIDIA_GPU-green.svg" alt="Hardware Support">
-  <img src="https://img.shields.io/badge/Latencia-Real--Time-red.svg" alt="Real Time">
-  <img src="https://img.shields.io/badge/Seguridad-100%25_Local-orange.svg" alt="100% Local">
+  <img src="https://img.shields.io/badge/Hardware-Apple_Silicon_|_NVIDIA_GPU-green.svg" alt="Hardware Support">
+  <img src="https://img.shields.io/badge/Idiomas-ES_·_KO_·_EN-purple.svg" alt="Idiomas">
+  <img src="https://img.shields.io/badge/Privacidad-100%25_Local-orange.svg" alt="100% Local">
 </p>
 
-**TradIon** es un sistema avanzado de traducción de voz simultánea en tiempo real, 100% local y de coste cero. Diseñado específicamente para reuniones presenciales usando teléfonos móviles conectados a una misma red, permite a múltiples usuarios hablar de forma simultánea en distintos idiomas (**Español, Coreano, Inglés**), sin necesidad de instalar ninguna aplicación.
+**TradIon** convierte una mesa física en una mesa multilingüe: cada persona habla en su idioma a su propio móvil y escucha a los demás **traducidos, con una voz afín a la de cada hablante y sonando desde el sitio real donde está sentado** (audio 3D). Todo el procesamiento —reconocimiento, traducción y síntesis de voz— ocurre en **un único ordenador de la casa**: sin nubes, sin cuotas, sin instalar apps (los móviles entran por el navegador).
 
-Desarrollado con una arquitectura moderna de baja latencia, procesa el audio en un servidor central (MacBook Pro o PC con NVIDIA) y lo distribuye a los teléfonos de la mesa. Muestra subtítulos parciales al instante mientras hablas, asigna a cada hablante una voz afín a su tono (análisis de f0 en la calibración) para leer sus traducciones — con clonación Zero-Shot real como modo opcional — y espacializa el audio en 3D.
-
----
-
-## 🚀 Características Principales
-
-- **100% Local y Privado:** Todo el procesamiento (STT, MT, TTS) ocurre en tu máquina. Nada se envía a servidores de terceros ni hay cuotas por uso.
-- **Baja Latencia (Real-Time):** subtítulos parciales instantáneos mientras hablas; la voz traducida llega típicamente en **1,5-4 s** tras cerrar la frase (STT+MT+TTS medidos con modelos INT8; la síntesis en sí tarda <150 ms).
-- **Voz afín + Clonación opcional:** en la calibración se analiza tu tono (f0) y se te asigna la voz más parecida del catálogo para cada idioma (puedes escucharlas y cambiarlas). El modo **Zero-Shot Voice Cloning** real (F5-TTS, `tts.backend: f5tts`) clona tu voz con las frases de calibración, a cambio de más latencia (~4-7 s por frase).
-- **Cross-Mic Suppression:** Supresión inteligente del eco y bucles de audio cruzados, vital en entornos donde múltiples micrófonos de móviles están encendidos en la misma mesa.
-- **Audio 3D (Espacial):** Mapeo de la sala en el cliente Web (Web Audio API) que permite escuchar la traducción viniendo físicamente de donde está sentada la otra persona.
-
-## 🧠 Tech Stack
-
-| Componente | Tecnología Principal | Propósito |
-| :--- | :--- | :--- |
-| **STT (Reconocimiento)** | Faster-Whisper (INT8) | Transcripción de altísima velocidad y precisión. |
-| **MT (Traducción)** | NLLB-200 / CTranslate2 | Traducción neuronal simultánea (Meta). |
-| **TTS (Síntesis)** | Piper TTS / F5-TTS | Voces ultrarrápidas y clonación Zero-Shot biométrica. |
-| **Red & Servidor** | aiohttp + WebSockets | Conectividad asíncrona full-duplex de baja latencia. |
+Idiomas soportados: **Español · 한국어 · English** (matriz completa, cualquier dirección).
 
 ---
 
-## 🛠 Instalación y Configuración (Paso a Paso)
+## ✨ Qué hace (funcionalidades)
 
-Sigue estos pasos en orden para evitar conflictos. Los móviles de los usuarios accederán escaneando un QR o mediante enlace Web, **sin instalar ninguna App.**
+| Funcionalidad | En qué consiste |
+| :--- | :--- |
+| **Traducción de voz en tiempo real** | Frase cerrada → traducida y hablada en ~**0,5-1,5 s** (RTX 3070) o ~1,5-4 s (MacBook M3), medidos en sesiones reales. |
+| **Subtítulos en vivo** | Ves la transcripción crecer *mientras* la persona habla (modelo dedicado que jamás compite con las traducciones). |
+| **Turno de palabra automático** | Un árbitro tipo walkie-talkie (CSMA/CA) decide qué micrófono emite, **calibrado por dispositivo**: cada micro compite relativo a su propio nivel de voz, así un móvil con micrófono sensible no roba el canal. Con histéresis, anti-acaparamiento y autocorrección de robos. |
+| **Anti cross-captura** | Si tu micro capta la voz del vecino, una guardia de idioma (LID con salvaguardas) la descarta y devuelve el canal; un verificador de locutor (huella del enroll) registra telemetría por segmento. |
+| **Voz afín por idioma** | En la calibración se mide tu tono (f0) y se te asigna la voz del catálogo más parecida **para cada idioma destino** — la escuchas y la cambias antes de entrar. Clonación Zero-Shot real (F5-TTS) disponible como modo calidad opcional. |
+| **Audio 3D colaborativo** | Plano de la mesa arrastrable y **compartido**: cualquiera recoloca a cualquiera y la voz de cada persona suena desde su asiento (HRTF). Requiere auriculares (idealmente de cable). |
+| **Calibración validada por voz** | El enroll te pide leer frases y las valida por reconocimiento (tolerante a acentos); de ahí salen tu huella vocal, tu tono y el nivel de tu micro. |
+| **Reconexiones invisibles** | Un micro-corte de red reconecta en 1-2 s conservando identidad, voz, asiento y subtítulos — la mesa ni se entera. |
+| **Interfaz trilingüe** | Toda la UI en es/ko/en, con estado honesto en pantalla: quién tiene el turno, por qué no te oyen, micro silenciado. |
+| **Arranque sin internet** | Tras la primera descarga de modelos, el servidor arranca y funciona 100 % offline. |
+| **Diagnóstico de audio 3D** | Página `/static/diag.html` para medir en 2 minutos qué puede dar cada móvil + auriculares (estéreo real, firma Bluetooth HFP, prueba de oído). |
 
-### 1. Requisitos Previos (Certificados de Red)
-Los navegadores móviles exigen HTTPS para encender el micrófono. Necesitamos instalar `mkcert` a nivel de sistema operativo para generar candados locales.
+## 🧠 Cómo funciona
+
+```mermaid
+flowchart LR
+    subgraph Movil["📱 Móvil de cada comensal (navegador)"]
+        MIC[Micrófono<br/>AudioWorklet 16 kHz] --> WS
+        WS[WebSocket seguro] --> OUT[Auriculares<br/>PannerNode 3D]
+    end
+    subgraph Servidor["🖥️ Servidor central (Mac o PC con NVIDIA)"]
+        FLOOR[Turno de palabra<br/>CSMA/CA calibrado] --> VAD[Detector de voz<br/>Silero VAD]
+        VAD --> STT[faster-whisper<br/>+ guardia LID]
+        STT --> FILT[Filtros anti-alucinación<br/>+ speaker gate]
+        FILT --> MT[NLLB-200 CTranslate2<br/>oración a oración]
+        MT --> TTS[Piper TTS<br/>voz afín por f0]
+    end
+    WS --> FLOOR
+    TTS --> WS
+```
+
+1. **Captura**: tu móvil re-muestrea el micrófono a 16 kHz y lo envía por WebSocket seguro. Empiezas silenciado (como Zoom).
+2. **Turno**: el primer micro con voz franca *relativa a su propia calibración* toma el canal; los demás se silencian en el servidor (así tu eco en el móvil de enfrente no genera duplicados). El turno se libera a los 600 ms de silencio.
+3. **Segmentación**: un detector neuronal de voz corta tus frases con contexto (pre-roll) y sin trocear pausas naturales.
+4. **Transcripción**: `faster-whisper` con una **guardia de idioma**: si detecta con confianza alta otro idioma *de la sala* en tu micro, es la voz del vecino y se descarta (dos seguidas devuelven además el canal); si duda (acentos), re-transcribe forzando tu idioma — nunca pierde tu voz.
+5. **Filtros**: confianza, lista negra de alucinaciones, anti-degeneración, y un **verificador de locutor** que compara cada segmento con tu huella del enroll (en modo telemetría hasta calibrarse con las voces reales de tu mesa).
+6. **Traducción**: NLLB-200 (int8) **oración a oración**, con topes anti-alucinación y recorte de diálogos inventados.
+7. **Síntesis**: Piper genera la voz asignada a tu tono en <150 ms (pre-calentada al calibrar).
+8. **Reproducción 3D**: cada oyente recibe subtítulo + traducción a su idioma + audio, que suena desde el asiento real del hablante (mesa hexagonal arrastrable y sincronizada para todos).
+
+**Privacidad por diseño**: la huella vocal vive en RAM y en un WAV temporal que se purga al salir y se barre al arrancar; nada sale de tu red local.
+
+---
+
+## 🛠 Instalación (paso a paso)
+
+Los móviles acceden por navegador — **sin instalar ninguna app**.
+
+### 1. Certificados de red (requisito de los navegadores)
+Los navegadores móviles exigen HTTPS para encender el micrófono. Instala `mkcert` a nivel de sistema:
 - **Mac:** `brew install mkcert`
 - **Windows:** `winget install mkcert`
-> ⚠️ **Importante:** Tras instalar, cierra la consola y abre una nueva para que tu ordenador reconozca el comando.
+> ⚠️ Tras instalar, cierra la consola y abre una nueva.
 
-### 2. Clonar y Crear Entorno Virtual
-Para evitar que las pesadas librerías de Inteligencia Artificial interfieran o rompan tu sistema, encapsularemos el proyecto en un entorno virtual (`.venv`).
+### 2. Clonar y crear el entorno virtual
 
 ```bash
 git clone https://github.com/pttb6dhg24-tech/TradIon.git
 cd TradIon
 python -m venv .venv
 
-# En Mac (zsh/bash):
+# Mac (zsh/bash):
 source .venv/bin/activate
-# En Windows (CMD/PowerShell):
+# Windows (CMD/PowerShell):
 .venv\Scripts\activate
 
 pip install -r requirements.txt
 ```
 
-### 3. Generar Certificados Locales
-Con tu entorno virtual activo, genera los certificados (se guardarán automáticamente en la carpeta `config/certs/`).
+### 3. Generar los certificados locales
 
 > [!IMPORTANT]
-> **Incluye la IP local de tu ordenador** en el certificado: sin ella, los móviles que entren por WiFi (Modo Offline) verán un certificado inválido y no podrán encender el micrófono. Averíguala con `ipconfig getifaddr en0` (Mac) o `ipconfig` (Windows, campo IPv4).
+> **Incluye la IP local de tu ordenador** en el certificado: sin ella, los móviles verán un candado inválido y no podrán encender el micrófono. Averíguala con `ipconfig getifaddr en0` (Mac) o `ipconfig` (Windows, campo IPv4).
 
 ```bash
 mkcert -install
 # Sustituye 192.168.1.50 por TU IP local:
 mkcert -cert-file config/certs/tradion.pem -key-file config/certs/tradion-key.pem localhost 127.0.0.1 ::1 192.168.1.50
 ```
-*(Si tu router cambia la IP por DHCP, fija una IP estática o regenera el certificado cuando cambie. Instala además la CA raíz de mkcert en cada móvil: `mkcert -CAROOT` te dice dónde está el `rootCA.pem`.)*
 
-### 4. Configurar el Hardware
-Entra en la carpeta `config/` y **copia** la plantilla de tu sistema, renombrándola a `settings.yaml`:
-- **Mac (M2/M3):** Copia `settings.mac.yaml` a `settings.yaml`. *(Usa el modelo `small` por CPU)*
-- **Windows (NVIDIA CUDA):** Copia `settings.windows.yaml` a `settings.yaml`. *(Usa CUDA y el modelo `large-v3-turbo`)*
+Instala además la CA raíz de mkcert en cada móvil (`mkcert -CAROOT` te dice dónde está el `rootCA.pem`).
+
+> [!CAUTION]
+> **Los certificados son secretos y NUNCA deben subirse al repositorio** (el `.gitignore` ya veta `config/certs/` entero). Si una clave privada llega a commitearse alguna vez, bórrala **y además regenera los certificados** — eliminar el fichero no lo saca del historial de git.
+
+### 4. Elegir la configuración de tu hardware
+Copia la plantilla de tu sistema como configuración activa:
+- **Mac (Apple Silicon):** `cp config/settings.mac.yaml config/settings.yaml`
+- **Windows (NVIDIA):** `Copy-Item config\settings.windows.yaml config\settings.yaml`
 
 > [!WARNING]
-> **Usuarios de Windows (NVIDIA):** 
-> Para que el sistema detecte las librerías matemáticas de la GPU, instala estos paquetes e inyecta las DLLs:
+> **Windows (NVIDIA):** para que CUDA encuentre sus librerías:
 > ```cmd
 > pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
 > copy .venv\Lib\site-packages\nvidia\cublas\bin\*.dll .venv\Scripts\
 > copy .venv\Lib\site-packages\nvidia\cudnn\bin\*.dll .venv\Scripts\
 > ```
 
-### 5. Descargar el Catálogo de Voces (TTS)
-El motor de voz necesita las voces del catálogo en `models/piper/` (sin ellas el servidor no arranca):
+### 5. Descargar el catálogo de voces
+
 ```bash
 # Mac / Linux:
 bash scripts/setup_voices.sh
@@ -98,43 +128,106 @@ bash scripts/setup_voices.sh
 python -m piper.download_voices --data-dir models/piper es_ES-davefx-medium es_ES-carlfm-x_low es_ES-sharvard-medium es_MX-claude-high es_MX-ald-medium en_US-amy-medium en_US-ryan-high en_US-lessac-medium en_GB-alan-medium ko_KR-kss-medium
 ```
 
-### 6. Arrancar el Servidor
-Una vez instalados los certificados, elegida la configuración y descargadas las voces, estás listo para encender el motor de IA.
+### 6. (Opcional) Verificador de locutor — Speaker Gate
+
+```bash
+pip install sherpa-onnx
+python scripts/setup_speaker_gate.py
+python scripts/bench_speaker_gate.py
+```
+
+Arranca **en modo sombra** (solo telemetría en los logs, jamás descarta). Calíbralo con dos voces reales de tu mesa (`python scripts/bench_speaker_gate.py voz1.wav voz2.wav`) antes de plantearte `enforce: true` en `settings.yaml`.
+
+### 7. Arrancar el servidor
+
 ```bash
 python -m backend.main_server
 ```
-*(La primera vez tardará varios minutos en descargar los modelos de IA y guardarlos en la carpeta `models/`).*
+
+La primera vez descargará los modelos de IA a `models/` (varios minutos). Después, **arranca y funciona sin internet**.
 
 ---
 
-## 🌐 Conectividad: Modo Offline vs Online
+## 🔄 Actualizar el servidor (Windows / PowerShell)
 
-### A) Modo Offline Absoluto (Local Wi-Fi)
-Puedes llevarte el servidor a medio de la selva sin internet. Solo necesitas un Router Wi-Fi local.
-1. Arranca el servidor: `python -m backend.main_server`
-2. En el móvil, conéctate al WiFi y entra en: `https://<IP-DE-TU-ORDENADOR>:8443`.
-*(Cero latencia de red, privacidad extrema).*
+Tras cada `git pull`, restaura tu configuración activa desde la plantilla (evita conflictos de merge):
 
-### B) Modo Online (Túneles de Cloudflare)
-Para usarlo a través de internet móvil (4G/5G) o cuando la red WiFi de la empresa bloquea conexiones entre ordenadores, exponemos el servidor usando Cloudflare.
-1. Arranca el servidor: `python -m backend.main_server`
-2. En otra terminal, abre un túnel ciego de Cloudflare conectándolo a tus certificados internos:
-   ```bash
-   cloudflared tunnel --url https://localhost:8443 --no-tls-verify
+```powershell
+git pull
+Copy-Item config\settings.windows.yaml config\settings.yaml -Force
+```
+
+> 💡 PowerShell 5.1 no acepta `&&` para encadenar comandos: ejecútalos en líneas separadas (o con `;`). Tras actualizar, los móviles deben recargar la página una vez (el servidor ya sirve el frontend con `no-cache`, pero la primera recarga tras una versión antigua puede necesitar cerrar y reabrir la pestaña).
+
+---
+
+## 🌐 Conectividad
+
+### A) Modo recomendado: WiFi local (offline absoluto)
+Máxima privacidad, mínima latencia, cero cortes. Solo necesitas que móviles y servidor compartan WiFi.
+
+1. **Windows**: permite el puerto en el firewall (una vez, como Administrador, con el WiFi marcado como red "Privada"):
+   ```powershell
+   netsh advfirewall firewall add rule name="TradIon 8443" dir=in action=allow protocol=TCP localport=8443 profile=private remoteip=localsubnet
    ```
-3. Pasa a los usuarios el enlace público generado por Cloudflare.
+2. Arranca el servidor y entra desde los móviles en `https://<IP-DE-TU-ORDENADOR>:8443`.
+
+### B) Túnel de Cloudflare (solo pruebas puntuales)
+
+```bash
+cloudflared tunnel --url https://localhost:8443 --no-tls-verify
+```
 
 > [!CAUTION]
-> **El enlace del túnel es PÚBLICO y la mesa no tiene autenticación:** cualquiera que consiga la URL puede entrar a la sala, escuchar las traducciones y dejar una muestra de su voz en tu ordenador (se borra al salir o reiniciar, pero existe mientras dura la sesión). Usa el túnel solo para pruebas puntuales con gente de confianza y ciérralo al terminar. Para uso habitual, quédate en el Modo Offline (WiFi local).
+> **El enlace del túnel NO es privado y la mesa no tiene autenticación**: cualquiera con la URL entra, escucha las traducciones y deja muestra de su voz. Además, el túnel corta los WebSockets con timeouts de ~100 s y añade 50-200 ms de latencia. Úsalo solo para pruebas breves con gente de confianza; para uso real, WiFi local.
 
 ---
 
-## ⚖️ Licencia y Uso Comercial (Double Licensing)
+## 🎧 Recomendaciones de audio (importan más que cualquier ajuste)
 
-El código fuente de este repositorio (Arquitectura TradIon, algoritmos de red y código del servidor) ha sido diseñado y programado desde cero por su autor y se publica bajo licencia **MIT**, permitiendo explícitamente su uso y explotación comercial.
+- **Auriculares de cable** para el 3D completo: el HRTF es binaural y por el altavoz del móvil es físicamente imposible.
+- **Bluetooth**: vale para *escuchar*, pero **su micrófono no** — con el micro activo, iOS/Android conmutan al perfil de telefonía (mono, banda estrecha) y el reconocimiento se degrada gravemente (comprobado en sesiones reales). Usa el micro del propio móvil.
+- Cada móvil cerca de su dueño; habla claro y deja que la frase termine (el turno se libera a los 600 ms de silencio).
+- Ante cualquier duda, abre `https://<IP>:8443/static/diag.html` en el móvil: mide tu ruta de audio real y te dice qué puede dar.
+
+## ⚙️ Configuración
+
+Toda la configuración vive en `config/settings.yaml` (nada hardcodeado). Las claves más útiles:
+
+| Clave | Qué controla |
+| :--- | :--- |
+| `stt.model_size` / `device` | Modelo Whisper y CPU/CUDA (plantillas ya afinadas por hardware). |
+| `audio.segment_close_silence_ms` | Silencio que cierra una frase (600 ms: equilibrio frases completas/latencia). |
+| `room.floor.*` | El turno de palabra: umbrales relativos, contienda, anti-acaparamiento. |
+| `stt.lid_crosstalk_min_prob` | Confianza mínima para descartar voz ajena por idioma. |
+| `stt.speaker_gate.*` | Verificador de locutor (sombra/enforce, umbrales). |
+| `tts.backend` | `piper` (rápido, por defecto) o `f5tts` (clonación real, más lento). |
+
+## 🧩 Estructura del repositorio
+
+```
+backend/    servidor aiohttp, motores (core_engine, translation, tts, speaker_gate)
+frontend/   PWA vanilla: lobby, mesa, audio-worklet, diagnóstico 3D
+config/     settings.yaml + plantillas por hardware (certs/ NUNCA se versiona)
+scripts/    descarga de voces, speaker gate, benchmarks, MeCab coreano
+models/     pesos de IA (se descargan; fuera del repo)
+docs/       DOCUMENTO_MAESTRO.md — arquitectura, decisiones y diario de ingeniería
+```
+
+## 🗺️ Hoja de ruta
+
+- **F12 — "Tela de araña"**: anillos de distancia en el plano 3D + filtro de "aire" con la lejanía + modos Sutil/Inmersivo.
+- **Speaker gate en enforce** tras calibración con las voces reales de cada mesa.
+- PIN de sala para exposición fuera de la LAN.
+
+---
+
+## ⚖️ Licencia y uso comercial (double licensing)
+
+El código fuente de este repositorio (arquitectura TradIon, algoritmos de red y código del servidor) se publica bajo licencia **MIT**, permitiendo explícitamente su uso y explotación comercial.
 
 > [!CAUTION]
 > **Aviso para uso comercial:**
-> Por defecto, el archivo de configuración de este repositorio instruye al sistema a descargar y utilizar el modelo de inteligencia artificial **NLLB-200** (desarrollado por Meta). El modelo NLLB-200 está protegido bajo la licencia **CC-BY-NC-4.0**, lo que **PROHÍBE ESTRICTAMENTE SU USO COMERCIAL**.
-> 
-> Si eres una empresa y pretendes utilizar el sistema TradIon para un producto de pago, vender servicios, o cualquier actividad con ánimo de lucro, **DEBES modificar el archivo `config/settings.yaml` para sustituir el modelo NLLB de Meta por un modelo de traducción de licencia abierta, o conectar una API comercial (ej. OpenAI, DeepL).** El autor original de TradIon no asume ninguna responsabilidad legal por el uso indebido de los pesos del modelo de Meta por parte de terceros.
+> Por defecto, la configuración descarga y usa el modelo **NLLB-200** (Meta), protegido bajo licencia **CC-BY-NC-4.0**, que **PROHÍBE ESTRICTAMENTE SU USO COMERCIAL**.
+>
+> Si pretendes usar TradIon en un producto de pago o cualquier actividad con ánimo de lucro, **DEBES sustituir en `config/settings.yaml` el modelo NLLB por un modelo de traducción de licencia abierta o una API comercial** (p. ej. DeepL). El autor de TradIon no asume responsabilidad por el uso indebido de los pesos de Meta por terceros.
