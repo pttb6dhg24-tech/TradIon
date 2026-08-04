@@ -622,6 +622,22 @@ SVO↔SOV lo aprende el transformer (atención cruzada), no reglas manuales.
   visual e intuitiva: anillos concéntricos en el plano, lowpass de «aire» por
   distancia, modos Sutil/Inmersivo) presentada al arquitecto — pendiente de GO.
 
+- **2026-08-04 (4) — Modo SOMBRA del Speaker Gate (propuesta del arquitecto: probar
+  en el sistema levantado con logs, no en frío).** Benchmark de la Victus recibido:
+  13-30 ms/embedding (aprobado), mismo hablante 0.757, peor par ajeno sintético
+  0.271 — hardware y motor validados; falta la calibración con voces reales. En vez
+  del baile manual de WAVs, el gate gana `enforce` (defecto `false` = **modo
+  sombra**): calcula y LOGUEA la similitud de CADA final contra la huella del
+  enroll (`speaker-gate SOMBRA: seg N sim 0.71 -> accept (2.3 s voz)`) y avisa de
+  los «habría sido DESCARTADO», pero **jamás tira nada** — una sesión normal de
+  conversación ES la calibración con voces reales. La plantilla Windows va con
+  `enabled: true + enforce: false` (telemetría en la próxima sesión; fail-open si
+  faltara algo); base y Mac siguen apagadas. Flujo de activación: sesión real →
+  leer la distribución de similitudes del log (propias vs cross-captura) → ajustar
+  accept/reject → `enforce: true`. Verificado por simulación: en sombra ningún
+  camino descarta (finales ni parciales) y enforce conserva el comportamiento
+  anterior intacto.
+
 ## 🔗 Fuentes
 
 - Referencia integral: https://github.com/QuentinFuxa/WhisperLiveKit · Topología: https://github.com/niedev/RTranslator
