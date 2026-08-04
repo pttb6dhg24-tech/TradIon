@@ -504,6 +504,54 @@ SVO↔SOV lo aprende el transformer (atención cruzada), no reglas manuales.
   roja para mensajes informativos («Voz calibrada ✓»), y texto fallback del
   plan_hint corregido («En la su voz…»). 6 claves i18n nuevas ×3 idiomas.
 
+- **2026-08-04 — Autopsia de la 4ª sesión: cross-captura con el hablante MUTEADO.**
+  Los tres síntomas reportados («uno se queda con todo el turno», «no se escuchaba
+  la voz cuando aparecía el texto», «todo muy lento») eran UNA cadena causal, no
+  tres averías. (1) **El agujero que dejó la retirada del LID, demostrado en vivo**
+  (el usuario CORRIGIÓ el primer diagnóstico: el Mac SÍ llevaba auriculares — no
+  fue TTS al aire, fue su VOZ DIRECTA en la misma habitación): el usuario EN estaba
+  **muteado sin saberlo** (sus frases: «Hello? Can you hear me? Can anybody hear
+  me?»; su primera adquisición de canal llega 2,5 min tras calibrar) → su
+  dispositivo no competía por el floor → el Samsung (sesión ES) capturó su inglés,
+  lo adquirió, lo transcribió y lo tradujo es→en devolviéndoselo en inglés. El
+  floor token NO puede arbitrar cuando el dispositivo del hablante real está mudo
+  — la «imposibilidad de ecos» que justificó dff20a6 era una sobreafirmación (el
+  riesgo quedó anotado entonces en el docstring; hoy se materializó). (2) Con ese
+  audio ajeno/basura, los umbrales internos de faster-whisper disparaban la
+  **escalera COMPLETA de temperaturas — hasta 6 decodificaciones del mismo
+  segmento: STT de 16.385 y 18.225 ms medidos** — la GPU secuestrada arrastraba el
+  MT a 1,5 s y el primer Piper a 2 s. (3) El TTS llegaba ~6 s tarde; mientras
+  sonaba en tu móvil, el ducking (half-duplex deliberado) te silenciaba el micro →
+  imposible tomar el turno: la sensación de monopolio era INANICIÓN POR LATENCIA,
+  no un bug del floor (el log muestra tomas/liberaciones correctas). (4) La voz
+  muda: ambos abrieron **diag.html en otra pestaña en mitad de la sesión**
+  (10:54:58 y 10:55:18) — WebKit/Android suspenden el AudioContext y pausan el
+  <audio> del loopback al perder el foco y NO los reanudan solos; el texto seguía
+  llegando por el WS pero el audio quedaba mudo (bug conocido, WebKit 237878, ya
+  citado en la investigación del 2026-08-01).
+  **Arreglo principal — GUARDIA LID v2 (A1 restaurada con las salvaguardas que
+  faltaban)**: transcripción con LID; descarta SOLO si detecta otro idioma DE LA
+  SALA con confianza ≥ `stt.lid_crosstalk_min_prob` (0.80); cualquier detección
+  exótica o dudosa ('ja' p=0.40 = acento) NO descarta ni se decodifica en el
+  idioma detectado: se re-transcribe FORZANDO el idioma del usuario. Tabla de
+  verdad verificada por simulación (cross-captura en→descarta; ja 0.40→forzado;
+  es 0.55→forzado; dialecto→forzado; normal→sin coste extra). Además: middleware
+  `no-cache` para `/` y `/static/` (los navegadores corrían UI RANCIA tras cada
+  git pull — probablemente el Mac no veía el aviso de «micro silenciado» nuevo), y
+  hallazgo de la verificación adversarial corregido: **'어' y '음' FUERA de la
+  blacklist de interjecciones** ('어' es el «sí» informal coreano — descartarlo
+  silenciaba respuestas reales de una palabra).
+  **Arreglos:** escalera de temperaturas ACOTADA a [0.0, 0.4] en los finales (peor
+  caso ~2 decodificaciones; la basura la descartan igual los filtros);
+  **reviveAudio()** — reanimación del AudioContext y del <audio> del loopback en
+  visibilitychange/focus/pointerdown/onstatechange (verificado en navegador:
+  suspended→running; tolera contexto nulo/cerrado); **MT por lotes** — todas las
+  oraciones del segmento en UNA llamada a translate_batch (tope de longitud por la
+  oración más larga del lote; el post-proceso anti-diálogo cubre el margen); y
+  blacklist de interjecciones (hmm/um/음/어... — 'Hmm' → '¿Qué es eso?' medido).
+  Regla operativa PARA LA MESA: auriculares en TODOS los dispositivos, también el
+  ordenador; y sigue pendiente en la Victus migrar del túnel a LAN + firewall.
+
 ## 🔗 Fuentes
 
 - Referencia integral: https://github.com/QuentinFuxa/WhisperLiveKit · Topología: https://github.com/niedev/RTranslator

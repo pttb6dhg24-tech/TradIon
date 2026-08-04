@@ -1027,8 +1027,20 @@ async def _api_voice_preview(request: web.Request) -> web.StreamResponse:
 
 
 
+@web.middleware
+async def _no_stale_frontend(request: web.Request, handler):
+    """El frontend NUNCA se sirve rancio: tras cada git pull, los navegadores tenían
+    app.js/styles.css cacheados y la mesa corría con UI vieja (p. ej. sin el aviso
+    de 'micro silenciado' — el usuario del Mac habló muteado sin saberlo). no-cache
+    NO prohíbe cachear: obliga a REVALIDAR (304 baratísimo en LAN) antes de usar."""
+    response = await handler(request)
+    if request.path == "/" or request.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 def build_app(server: TradIonServer) -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[_no_stale_frontend])
     app["server"] = server
     ws_path = server.settings["server"].get("ws_path", "/ws")
     app.router.add_get(ws_path, server.websocket_handler)

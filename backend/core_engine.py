@@ -396,6 +396,10 @@ class CoreEngine:
             raise ModelLoadError(f"No se pudo cargar Whisper '{stt_cfg['model_size']}': {exc}") from exc
 
         self._beam_size = int(stt_cfg.get("beam_size", 1))
+        # Confianza mínima del LID para descartar un segmento como cross-captura
+        # (otro idioma DE LA SALA hablado junto a este micro). Por debajo del umbral
+        # NO se descarta: se re-transcribe forzando el idioma del usuario.
+        self._lid_crosstalk_min_prob = float(stt_cfg.get("lid_crosstalk_min_prob", 0.80))
         # Frases-alucinación típicas de Whisper con ruido/silencio (configurable en YAML,
         # comparación sin mayúsculas ni signos): último recurso tras no_speech/logprob
         default_blacklist = ["gracias por ver", "gracias por mirar", "thanks for watching",
@@ -490,29 +494,57 @@ class CoreEngine:
                         force_language: bool = False) -> tuple[str, float]:
         """Corre dentro del ThreadPoolExecutor. Acepta ndarray float32 16 kHz en memoria (A3).
 
-        El idioma SIEMPRE va forzado al declarado por el usuario (A2). El filtro LID
-        anti-eco (A1) queda RETIRADO a propósito — no lo restaures: en segmentos cortos
-        el LID de Whisper es una moneda al aire (acento español hablando inglés -> 'ja'
-        p=0.40) y descartaba sistemáticamente voz válida ('' en cada segmento). El
-        cross-talk que el LID vigilaba lo arbitra ahora el floor token CSMA/CA en el
-        servidor (audio ajeno puesto a cero). Riesgo residual asumido: si un vecino
-        MUTEADO habla junto a tu móvil, tu sesión puede adquirir el canal y transcribir
-        su voz como basura en TU idioma — los filtros no_speech/logprob de abajo cazan
-        la mayoría; si reaparecen subtítulos basura en mesa física, ese es el sitio.
-        `force_language` se conserva por compatibilidad (enroll): hoy es redundante.
+        GUARDIA LID DE CROSS-CAPTURA (A1 v2, restaurada el 2026-08-04 con salvaguardas):
+        el floor token NO cubre el caso del vecino con su dispositivo MUTEADO — su voz
+        directa entra por TU micro, tu dispositivo adquiere el canal y su idioma se
+        transcribe/traduce en TU sesión (demostrado en la Victus: el usuario EN muteado
+        hablaba, la sesión ES capturó 'Hello? Can you hear me?', lo tradujo es->en y se
+        lo devolvió en inglés). Diseño de la guardia — las DOS salvaguardas que faltaban
+        en el LID original (que descartaba 'ja' p=0.40 y mataba voz válida):
+          1) solo descarta si el idioma detectado es OTRO idioma DE LA SALA con
+             confianza >= stt.lid_crosstalk_min_prob (0.80 por defecto);
+          2) cualquier otra detección (exótica tipo 'ja', dialecto, confianza baja =
+             acento confundiendo al LID) NO descarta: se RE-transcribe forzando el
+             idioma del usuario, nunca se decodifica en el idioma detectado.
+        Coste: el camino normal (detectado == esperado) reutiliza el encoder de la
+        pasada LID (~coste de siempre); el camino dudoso paga una decodificación extra.
+        `force_language=True` (enroll) salta la guardia por completo.
         El doble-VAD interno queda desactivado (A4): el recorte de silencios ya lo hizo
         el Silero de la sesión. Todos los descartes se LOGUEAN con su causa."""
         t0 = time.perf_counter()
+        # Escalera de temperaturas ACOTADA a 2 pasadas: con audio de eco o basura,
+        # los umbrales internos (compression_ratio/logprob) disparan el fallback
+        # COMPLETO de faster-whisper — hasta 6 decodificaciones del MISMO segmento.
+        # Medido en la Victus: STT de 16-18 s por 2-3 s de audio, GPU secuestrada,
+        # MT a 1,5 s y el TTS llegando tan tarde que el ducking del receptor le
+        # impedía tomar el turno. Si la 2ª pasada sale basura, los filtros la tiran.
+        decode_opts = dict(
+            beam_size=self._beam_size,
+            condition_on_previous_text=False,
+            temperature=[0.0, 0.4],
+        )
         try:
-            # Ahora que tenemos el CSMA/CA (Floor Token), los ecos acústicos son imposibles.
-            # Ya NO necesitamos que Whisper adivine el idioma. Le forzamos SIEMPRE el idioma 
-            # esperado para evitar falsos positivos de LID por culpa del ruido (ej. 'ja', 'cy').
             segments, info = self.whisper.transcribe(
                 audio,
-                language=expected_language,
-                beam_size=self._beam_size,
-                condition_on_previous_text=False,
+                language=expected_language if force_language else None,
+                **decode_opts,
             )
+            if not force_language and info.language != expected_language:
+                detected, prob = info.language, info.language_probability
+                if (detected in self.allowed_languages
+                        and prob >= self._lid_crosstalk_min_prob):
+                    # Cross-captura demostrable: otro idioma DE LA SALA con confianza
+                    # alta. `segments` es perezoso: al no iterarlo, no se pagó decode.
+                    logger.info("LID cross-captura: descartado segmento '%s' (p=%.2f, "
+                                "esperado '%s')", detected, prob, expected_language)
+                    return "", (time.perf_counter() - t0) * 1000.0
+                # Detección exótica/dudosa ('ja' p=0.40 = acento): NUNCA decodificar
+                # en el idioma detectado (saldría basura) — re-transcribir FORZADO
+                logger.info("LID dudoso: '%s' (p=%.2f) -> re-transcripción forzada a "
+                            "'%s'", detected, prob, expected_language)
+                segments, info = self.whisper.transcribe(
+                    audio, language=expected_language, **decode_opts,
+                )
 
             valid_texts = []
             dropped: dict[str, int] = {}
