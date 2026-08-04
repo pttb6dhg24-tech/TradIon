@@ -638,6 +638,34 @@ SVO↔SOV lo aprende el transformer (atención cruzada), no reglas manuales.
   camino descarta (finales ni parciales) y enforce conserva el comportamiento
   anterior intacto.
 
+- **2026-08-04 (5) — FLOOR v2: el turno deja de ser del micrófono más sensible.**
+  Autopsia de la 6ª sesión (Mac + iPhone): el árbitro del canal usaba un umbral
+  ABSOLUTO (0.025 para todos) y el iPhone con AGC lo cruzaba con la voz DEL VECINO —
+  **6 «Canal tomado» seguidos acabando todos en LID cross-captura**, mientras el
+  micro del hablante real moría puesto a cero («I have to be close to my
+  microphone…» dicho en la propia sesión). El modo sombra del gate además dio su
+  veredicto: con estas dos voces (ambas ~132 Hz) la voz propia (0.43-0.68) y la
+  cross-captura (0.52-0.55 en el Mac) SE SOLAPAN → `enforce` prohibido para esta
+  pareja; el gate sigue en sombra (un final propio legítimo, 'no sé por qué',
+  puntuó 0.32 — enforce lo habría matado). **Rediseño v2**: (a) umbrales RELATIVOS
+  al nivel de voz calibrado de cada micro (enroll → `voice_rms`, suelo absoluto y
+  tope 3×), (b) CONTIENDA de 240 ms — el canal es de quien suena más fuerte
+  relativo a su propia calibración, no del primer frame, (c) la cross-captura
+  demostrada por el LID libera el canal y encuarentena 1 s. **Auditoría
+  adversarial: 7 hallazgos confirmados, 7 corregidos** — evidencia crosstalk
+  RANCIA (llega ~1 s tarde) ya no mata la re-adquisición legítima (frescura:
+  `floor_last_acquired` vs `closed_at` del segmento); ventana 120→240 ms (el
+  frame del cliente es de 128 ms — la puja del hablante real podía llegar tras la
+  resolución); un solo veredicto LID ya no cuesta el canal (CORROBORACIÓN: 2
+  seguidos en ≤10 s — un «¿cómo se dice…?» legítimo no penaliza); divisor de la
+  puja con SUELO y cap 2.5 (un enroll flojo con vr<0.025 ganaba siempre);
+  subcampeón hereda el grant si el mejor cae; `acquire_rel` 0.30→0.20 +
+  **adaptación EMA** del `voice_rms` con los finales propios (el enroll se habla
+  con el micro cerca; la mesa queda lejos); racha de cross-captura se corta con
+  cada final propio. Todo verificado por simulación hallazgo a hallazgo. Firmas
+  nuevas en el log: «Canal tomado por X (contienda, norm N, M pujas)» y «Canal
+  liberado (cross-captura xN)».
+
 ## 🔗 Fuentes
 
 - Referencia integral: https://github.com/QuentinFuxa/WhisperLiveKit · Topología: https://github.com/niedev/RTranslator

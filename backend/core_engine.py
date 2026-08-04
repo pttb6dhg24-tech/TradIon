@@ -73,6 +73,11 @@ class TranscriptionResult:
     stt_ms: float                  # métrica de latencia de la etapa STT (§1.9)
     error: Optional[str] = None    # un fallo del pipeline es distinguible de "no dijo nada"
     partial: bool = False          # True = hipótesis en vivo del segmento ABIERTO (no traducir)
+    crosstalk: bool = False        # True = el LID demostró voz AJENA en este micro: el
+                                   # servidor usa esta evidencia para soltar el floor
+    closed_at: float = 0.0         # time.monotonic() del CIERRE del segmento: la evidencia
+                                   # crosstalk solo vale contra posesiones ANTERIORES a él
+    voiced_rms: float = 0.0        # nivel de voz del segmento (adapta la calibración del micro)
 
     @property
     def ok(self) -> bool:
@@ -109,6 +114,19 @@ def _normalize_chunk(data: bytes | bytearray | memoryview | np.ndarray) -> np.nd
             )
         return chunk
     raise AudioFormatError(f"dtype de audio no soportado: {chunk.dtype}")
+
+
+def voiced_rms(samples: np.ndarray, win: int = 512) -> float:
+    """Nivel de voz de un clip: mediana del RMS de las ventanas CON señal. Calibra
+    los umbrales RELATIVOS del floor v2 (enroll) y su adaptación en conversación."""
+    if samples.size < win:
+        return float(np.sqrt(np.mean(samples ** 2))) if samples.size else 0.0
+    n = samples.size // win
+    w = samples[: n * win].reshape(n, win)
+    rms = np.sqrt(np.mean(w ** 2, axis=1))
+    floor_level = max(0.008, float(np.percentile(rms, 40)))
+    voiced = rms[rms > floor_level]
+    return float(np.median(voiced)) if voiced.size else float(np.median(rms))
 
 
 _REPEAT_RUN = re.compile(r"(.)\1{9,}")   # 10+ repeticiones seguidas del mismo carácter
@@ -381,7 +399,8 @@ class VoiceSession:
         task = asyncio.get_running_loop().create_task(
             self._run_stt(audio, self._segment_seq, prev,
                           speech_ms=getattr(self, "_closed_speech_ms", 0.0),
-                          tail_ms=getattr(self, "_closed_tail_ms", 0.0))
+                          tail_ms=getattr(self, "_closed_tail_ms", 0.0),
+                          closed_at=time.monotonic())
         )
         self._prev_stt = task
         self._stt_tasks.add(task)             # referencia viva: evita que el GC cancele la tarea
@@ -389,9 +408,10 @@ class VoiceSession:
 
     async def _run_stt(self, audio: np.ndarray, segment_id: int,
                        prev: Optional[asyncio.Task], speech_ms: float = 0.0,
-                       tail_ms: float = 0.0) -> None:
+                       tail_ms: float = 0.0, closed_at: float = 0.0) -> None:
         loop = asyncio.get_running_loop()
         seconds = audio.size / self._sample_rate
+        seg_voiced_rms = voiced_rms(audio)   # adapta la calibración del micro (floor v2)
 
         # F11 — Speaker Gate: si la firma de locutor del segmento no se parece a la
         # huella del dueño de ESTE micro, es voz ajena (cross-captura del mismo
@@ -427,7 +447,8 @@ class VoiceSession:
                         with suppress(Exception):
                             await prev
                     await self.results.put(TranscriptionResult(
-                        self.speaker_id, segment_id, self.language, "", seconds, 0.0))
+                        self.speaker_id, segment_id, self.language, "", seconds, 0.0,
+                        closed_at=closed_at))
                     return
                 elif verdict == "gray":
                     logger.info("(%s) speaker-gate: seg %d zona GRIS (sim %.2f) — pasa",
@@ -438,17 +459,19 @@ class VoiceSession:
 
         self.engine.heavy_pending += 1
         try:
-            text, stt_ms = await loop.run_in_executor(
+            text, stt_ms, crosstalk = await loop.run_in_executor(
                 self.engine.stt_executor, self.engine.transcribe_sync, audio, self.language
             )
             result = TranscriptionResult(self.speaker_id, segment_id, self.language,
-                                         text, seconds, stt_ms)
+                                         text, seconds, stt_ms, crosstalk=crosstalk,
+                                         closed_at=closed_at, voiced_rms=seg_voiced_rms)
             logger.info("(%s) seg %d: %.1f s de audio -> STT %.0f ms -> %r",
                         self.speaker_id, segment_id, seconds, stt_ms, text)
         except Exception as exc:  # se reporta tipado en la cola; jamás silencio (M2)
             logger.exception("(%s) STT falló en el segmento %d", self.speaker_id, segment_id)
             result = TranscriptionResult(self.speaker_id, segment_id, self.language,
-                                         "", seconds, 0.0, error=str(exc))
+                                         "", seconds, 0.0, error=str(exc),
+                                         closed_at=closed_at)
         finally:
             self.engine.heavy_pending -= 1
         if prev is not None:
@@ -620,7 +643,7 @@ class CoreEngine:
         session.ref_embedding = emb / norm if norm > 0 else emb
 
     def transcribe_sync(self, audio: np.ndarray, expected_language: str,
-                        force_language: bool = False) -> tuple[str, float]:
+                        force_language: bool = False) -> tuple[str, float, bool]:
         """Corre dentro del ThreadPoolExecutor. Acepta ndarray float32 16 kHz en memoria (A3).
 
         GUARDIA LID DE CROSS-CAPTURA (A1 v2, restaurada el 2026-08-04 con salvaguardas):
@@ -664,9 +687,11 @@ class CoreEngine:
                         and prob >= self._lid_crosstalk_min_prob):
                     # Cross-captura demostrable: otro idioma DE LA SALA con confianza
                     # alta. `segments` es perezoso: al no iterarlo, no se pagó decode.
+                    # El flag crosstalk=True es EVIDENCIA para el floor: este micro
+                    # ganó el canal con la voz del vecino y debe soltarlo.
                     logger.info("LID cross-captura: descartado segmento '%s' (p=%.2f, "
                                 "esperado '%s')", detected, prob, expected_language)
-                    return "", (time.perf_counter() - t0) * 1000.0
+                    return "", (time.perf_counter() - t0) * 1000.0, True
                 # Detección exótica/dudosa ('ja' p=0.40 = acento): NUNCA decodificar
                 # en el idioma detectado (saldría basura) — re-transcribir FORZADO
                 logger.info("LID dudoso: '%s' (p=%.2f) -> re-transcripción forzada a "
@@ -700,7 +725,7 @@ class CoreEngine:
             raise TranscriptionError(
                 f"STT falló ({expected_language}, {audio.size} muestras): {exc}"
             ) from exc
-        return text, (time.perf_counter() - t0) * 1000.0
+        return text, (time.perf_counter() - t0) * 1000.0, False
 
     def transcribe_partial_sync(self, audio: np.ndarray, language: str) -> tuple[str, float]:
         """Pasada parcial (modelo pequeño): coste acotado a UNA decodificación.
