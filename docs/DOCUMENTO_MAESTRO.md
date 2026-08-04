@@ -552,6 +552,42 @@ SVO↔SOV lo aprende el transformer (atención cruzada), no reglas manuales.
   Regla operativa PARA LA MESA: auriculares en TODOS los dispositivos, también el
   ordenador; y sigue pendiente en la Victus migrar del túnel a LAN + firewall.
 
+- **2026-08-04 (2) — Evaluación «Krisp» (petición del arquitecto): veredicto y diseño F11.**
+  Investigación con fuentes (2 agentes). **Krisp: descartado** — el SDK (el que usa
+  Discord, confirmado, incluida su build WASM para navegador) es enterprise con
+  acceso solo por ventas, sin precio público ni autoservicio; la única vía gratuita
+  es su app de escritorio (micro virtual, 60 min/día) no embebible → incompatible
+  con coste-cero y con captura en móviles. **El navegador no salva**: la
+  `noiseSuppression` de getUserMedia (ya activa por defecto) es la supresión
+  clásica de WebRTC — ruido estacionario, PRESERVA voces (incluida la del vecino);
+  el constraint `voiceIsolation` solo funciona en ChromeOS y Safari ni ha
+  respondido a la spec; el «Aislar voz» de iOS no está documentado para
+  getUserMedia (probar empíricamente, no construir sobre ello). **Insight clave:
+  la supresión de ruido NO elimina voces ajenas** — el problema real de TradIon
+  (cross-captura) requiere VERIFICACIÓN DE HABLANTE, exactamente lo que hace el
+  «voice isolation» personalizado de Teams con un perfil de voz enrolado… y
+  TradIon YA tiene la huella vocal del enroll. **Diseño F11 — Speaker Gate (coste
+  cero, 100% local):** en el servidor, extraer el embedding de locutor de cada
+  segmento (sherpa-onnx, Apache-2.0, modelos ONNX WeSpeaker CAM++/3D-Speaker de
+  25-38 MB, **nativos a 16 kHz** — encajan sin re-muestrear) y compararlo por
+  coseno contra el embedding de la huella del dueño del micro; doble umbral
+  (aceptar / zona gris marcada en UI / rechazar con telemetría), partir de 0.5-0.6
+  y calibrar en mesa. Complementa a la guardia LID v2: el LID caza cross-captura
+  ENTRE idiomas; el gate caza la del MISMO idioma (dos hispanohablantes) y valida
+  la identidad siempre. Precauciones de la literatura: <2 s de voz degrada el EER
+  (~+46% relativo de 3.6→2 s) → acumular ≥2 s por decisión; subir el enroll a
+  10-15 s o promediar embeddings de segmentos aceptados (adaptación online); los
+  embeddings deben calcularse sobre el MISMO tipo de audio que el enroll (si se
+  añade denoiser, re-enrolar). Benchmark previo obligatorio en la Victus
+  (objetivo <50 ms/segmento, plausible). **Ruido de fondo (no vocal), opcional:**
+  RNNoise-WASM de Jitsi (BSD/Apache, patrón producción: worklet a 48 kHz, buffer
+  128→480, ANTES del downsample a 16 kHz) en el cliente; DeepFilterNet3
+  (MIT/Apache, RTF 0.19 CPU, 40 ms de latencia algorítmica, ojo 16→48→16) en el
+  servidor si hiciera falta más. **Maxine/Broadcast: descartado** (licencia de
+  evaluación, ~1 GB, y tampoco elimina voces). Señal complementaria barata para la
+  zona gris: comparar energía/instante de llegada del mismo evento entre
+  dispositivos (el micro del hablante real capta antes y más fuerte).
+
 ## 🔗 Fuentes
 
 - Referencia integral: https://github.com/QuentinFuxa/WhisperLiveKit · Topología: https://github.com/niedev/RTranslator
