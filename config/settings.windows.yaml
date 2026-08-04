@@ -76,13 +76,19 @@ stt:
                                   # sherpa-onnx se desactiva solo con un aviso.
                                   # En la Victus va ENCENDIDO en modo sombra: cada sesión
                                   # real loguea las similitudes (calibración gratis).
-    enforce: false                # false = MODO SOMBRA: loguea la similitud de cada segmento
-                                  # contra la huella del enroll pero JAMÁS descarta. Subir a
-                                  # true SOLO tras revisar los logs de una sesión real y
-                                  # ajustar accept/reject con esos números.
+    enforce: true                 # ENFORCE encendido el 2026-08-04 con la calibración en sombra
+                                  # de la sesión real con altavoces en ambos dispositivos: voz
+                                  # propia 0.44-0.77, TTS vecino (es-ald/en-alan) -0.04-0.33.
+                                  # Solo descarta reject (<0.35); la zona GRIS [0.35, 0.55)
+                                  # PASA siempre (fail-open): nada real cae bajo el umbral.
+                                  # Es la única defensa contra la realimentación del MISMO
+                                  # idioma (TTS inglés en el micro del perfil inglés): la
+                                  # guardia LID ahí es ciega ('How much? I am.' sim 0.18).
     model: models/speaker/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx
-    accept: 0.55                  # >= : es el dueño del micro (medido: mismo hablante ~0.79)
-    reject: 0.35                  # <  : voz ajena, segmento descartado (medido: ajenos 0.06-0.31)
+    accept: 0.55                  # >= : es el dueño del micro (sesión 04/08: voz propia
+                                  # mínima 0.46 en finales puros; la gris pasa igualmente)
+    reject: 0.35                  # <  : voz ajena, segmento descartado (sesión 04/08: TTS
+                                  # vecino como máximo 0.33 en parciales, 0.20 en finales)
     min_speech_s: 1.0             # con menos voz no se decide (el error se dispara <2 s)
     num_threads: 2                # hilos ONNX del extractor (~29 ms/segmento en CPU M3)
   partials:                       # transcripción parcial en vivo (ventana deslizante, F5.2)

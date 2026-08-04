@@ -346,21 +346,27 @@ class VoiceSession:
         if audio.size > self._partial_window:
             audio = audio[-self._partial_window:]
         task = asyncio.get_running_loop().create_task(
-            self._run_partial(audio, self._utterance_id)
+            self._run_partial(audio, self._utterance_id, self._speech_ms)
         )
         self._stt_tasks.add(task)
         task.add_done_callback(self._stt_tasks.discard)
 
-    async def _run_partial(self, audio: np.ndarray, utterance_id: int) -> None:
+    async def _run_partial(self, audio: np.ndarray, utterance_id: int,
+                           speech_ms: float = 0.0) -> None:
         loop = asyncio.get_running_loop()
         # F11 — el gate también cubre los PARCIALES: sin esto, la voz del vecino
         # rechazada en el final se difundía igualmente EN VIVO hasta 15 s con la
         # atribución del dueño del micro, y nada la retractaba (el final vacío no
-        # se difunde). La ventana del parcial exige >=800 ms de voz real
-        # (partial_min_speech_ms), así que hay material para decidir; de paso se
-        # ahorra el STT del modelo de parciales en los rechazos.
+        # se difunde). De paso se ahorra el STT del modelo de parciales en los
+        # rechazos. El suelo de voz es el MISMO que en los finales (min_speech_s
+        # sobre la voz REAL acumulada): los 800 ms de partial_min_speech_ms quedan
+        # por debajo del 1.0 s que el propio gate exige, y con pre-roll + relleno
+        # el embedding decidía —incluido el REJECT destructivo con enforce— en el
+        # régimen de error alto (<2 s). Hallazgo adversarial del encendido de
+        # enforce; con menos voz el parcial pasa sin gate, como los finales.
         gate = self.engine.speaker_gate
-        if gate.available and self.ref_embedding is not None:
+        if (gate.available and self.ref_embedding is not None
+                and int(speech_ms * 16) >= gate.min_samples):
             sim = None
             try:
                 sim = await loop.run_in_executor(gate.executor, gate.score,

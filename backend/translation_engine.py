@@ -137,6 +137,7 @@ class TextTranslator:
     _TURN_SPLIT = re.compile(r"\n+|(?<=[.!?…])\s+(?=[-–—]\s)")
     _TURN_DASH = re.compile(r"(?<=[.!?…])\s+[-–—]\s+")
     _SENT_SPLIT = re.compile(r"(?<=[.!?…])\s+")
+    _INVENTED_ANSWER = re.compile(r"(?<=\?)\s+(?=[-–—]\s)")
 
     def translate(self, text: str, src_lang: str, tgt_lang: str) -> str:
         """Síncrona (tests y scripts). En el servidor usa translate_async().
@@ -165,16 +166,29 @@ class TextTranslator:
         """NLLB aprendió el formato de subtítulos de su corpus y con frases cortas a
         veces (a) antepone un guion de diálogo y (b) INVENTA un segundo turno entero:
         'What did you say?' -> '- ¿Qué dijiste? - No.' — ese '- No.' no lo dijo nadie
-        y el TTS lo pronunciaba en la mesa. Solo si la fuente tiene UNA oración (y sin
-        guion propio) se recorta al primer turno: con fuente MULTI-oración la salida
-        multi-turno es contenido REAL en formato subtítulo ('Gracias. Hasta mañana.'
-        -> '- Thank you. - See you tomorrow.') y recortar destruiría la segunda
-        oración — ahí solo se limpian los guiones. Cada recorte queda logueado."""
-        if (not translated or self._DIALOG_DASH.match(source)
-                or not self._DIALOG_DASH.match(translated)):
+        y el TTS lo pronunciaba en la mesa. Solo si la fuente tiene UNA oración (y
+        sin guion propio) se recorta al primer turno: con fuente MULTI-oración la
+        salida multi-turno es contenido REAL en formato subtítulo ('Gracias. Hasta
+        mañana.' -> '- Thank you. - See you tomorrow.') y recortar destruiría la
+        segunda oración — ahí solo se limpian los guiones. El turno inventado también
+        aparece SIN guion inicial tras una PREGUNTA ('How are you?' -> '¿Cómo estás?
+        - Bien.', Victus 2026-08-04: ese '- Bien.' fantasma se sintetizó y realimentó
+        el micro vecino); sin el guion inicial como señal fuerte, el recorte se
+        limita al patrón pregunta->respuesta ('? - X'): un '. - ' tras afirmación es
+        demasiado a menudo contenido real ('9 a.m. - 6 p.m.', reformateos de fuente
+        con coma; hallazgo adversarial) y NO se toca. Cada recorte queda logueado."""
+        if not translated or self._DIALOG_DASH.match(source):
             return translated
-        stripped = self._DIALOG_DASH.sub("", translated, count=1)
         src_sentences = [s for s in self._SENT_SPLIT.split(source.strip()) if s.strip()]
+        if not self._DIALOG_DASH.match(translated):
+            if len(src_sentences) > 1:
+                return translated
+            first = self._INVENTED_ANSWER.split(translated, maxsplit=1)[0].strip()
+            if first != translated:
+                logger.info("MT: respuesta inventada tras pregunta recortada: %r -> %r",
+                            translated, first)
+            return first or translated
+        stripped = self._DIALOG_DASH.sub("", translated, count=1)
         if len(src_sentences) > 1:
             cleaned = self._TURN_DASH.sub(" ", stripped).strip()
             return cleaned or translated
