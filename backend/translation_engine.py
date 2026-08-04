@@ -151,14 +151,15 @@ class TextTranslator:
             return ""
         src_code, tgt_code = self._resolve_pair(src_lang, tgt_lang)
         pieces = [s.strip() for s in self._SENT_SPLIT.split(text) if s.strip()] or [text]
-        outs = []
-        for piece in pieces:
-            if self.backend == "ct2":
-                out = self._translate_ct2(piece, src_code, tgt_code)
-            else:
-                out = self._translate_transformers(piece, src_code, tgt_code)
-            outs.append(self._strip_invented_dialog(piece, out))
-        return " ".join(o for o in outs if o).strip()
+        if self.backend == "ct2":
+            # UNA llamada a translate_batch con todas las oraciones: secuencial
+            # duplicaba la latencia por oración extra (medido bajo carga en la
+            # Victus: MT a 1,5 s con la GPU ocupada)
+            outs = self._translate_ct2_batch(pieces, src_code, tgt_code)
+        else:
+            outs = [self._translate_transformers(p, src_code, tgt_code) for p in pieces]
+        cleaned = [self._strip_invented_dialog(p, o) for p, o in zip(pieces, outs)]
+        return " ".join(o for o in cleaned if o).strip()
 
     def _strip_invented_dialog(self, source: str, translated: str) -> str:
         """NLLB aprendió el formato de subtítulos de su corpus y con frases cortas a
@@ -213,15 +214,16 @@ class TextTranslator:
                            self._max_input_tokens)
         return tokens
 
-    def _translate_ct2(self, text: str, src_code: str, tgt_code: str) -> str:
+    def _translate_ct2_batch(self, texts: list[str], src_code: str, tgt_code: str) -> list[str]:
         try:
-            tokens = self._encode_tokens(text, src_code)
+            token_lists = [self._encode_tokens(t, src_code) for t in texts]
         except Exception as exc:  # el contrato de translate() es SIEMPRE TranslationError (M2)
             raise TranslationError(f"Tokenización falló ({src_code}): {exc}") from exc
+        max_src_len = max((len(toks) for toks in token_lists), default=1)
         try:
             results = self._ct2.translate_batch(
-                [tokens],
-                target_prefix=[[tgt_code]],
+                token_lists,
+                target_prefix=[[tgt_code]] * len(token_lists),
                 beam_size=self._beam_size,
                 # Defensas del "standard setting" de NLLB-600M (benchmark HalOmi,
                 # arxiv 2305.11746): tope de longitud RELATIVO a la entrada
@@ -230,20 +232,26 @@ class TextTranslator:
                 # inventado '- No.'), que no es una repetición y a la que
                 # no_repeat_ngram_size no llega — más bloqueo de 3-gramas
                 # repetidos ('Thank you. Thank you.') y sin token <unk>.
+                # El tope es único por lote (CT2 no lo acepta por ejemplo): se usa
+                # la oración MÁS LARGA — algo más laxo para las cortas del lote,
+                # pero el post-proceso anti-diálogo sigue cubriendo ese hueco.
                 max_decoding_length=min(self._max_output_tokens,
-                                        3 * len(tokens) + 5),
+                                        3 * max_src_len + 5),
                 no_repeat_ngram_size=3,
                 disable_unk=True,
             )
         except Exception as exc:
             raise TranslationError(f"CTranslate2 falló ({src_code}->{tgt_code}): {exc}") from exc
         try:
-            hypothesis = results[0].hypotheses[0]
-            if hypothesis and hypothesis[0] == tgt_code:
-                hypothesis = hypothesis[1:]  # quitar el token de idioma del prefijo
-            with self._lock:
-                ids = self.tokenizer.convert_tokens_to_ids(hypothesis)
-                return self.tokenizer.decode(ids, skip_special_tokens=True).strip()
+            outs: list[str] = []
+            for res in results:
+                hypothesis = res.hypotheses[0]
+                if hypothesis and hypothesis[0] == tgt_code:
+                    hypothesis = hypothesis[1:]  # quitar el token de idioma del prefijo
+                with self._lock:
+                    ids = self.tokenizer.convert_tokens_to_ids(hypothesis)
+                    outs.append(self.tokenizer.decode(ids, skip_special_tokens=True).strip())
+            return outs
         except Exception as exc:
             raise TranslationError(f"Decodificación falló ({src_code}->{tgt_code}): {exc}") from exc
 

@@ -39,6 +39,10 @@ stt:
   beam_size: 1                    # greedy: prioridad latencia (auditoría A4)
   workers: 2                      # transcripciones concurrentes (hablantes simultáneos)
   cpu_threads: 4                  # hilos de CTranslate2 por transcripción
+  lid_crosstalk_min_prob: 0.8     # confianza mínima del LID para descartar cross-captura
+                                  # (otro idioma DE LA SALA en tu micro, p. ej. el vecino
+                                  # muteado hablando al lado); por debajo NO descarta:
+                                  # re-transcribe forzando tu idioma (acentos seguros)
   hallucination_blacklist:        # frases-alucinación de Whisper descartadas (sin mayúsculas/signos)
     - gracias por ver
     - gracias por mirar
@@ -47,6 +51,16 @@ stt:
     - suscribete
     - sign up
     - 구독
+    # Interjecciones sueltas: sin contenido traducible, NLLB inventa con ellas
+    # ('Hmm' -> '¿Qué es eso?' medido en la Victus). OJO: nada de coreano aquí —
+    # '어' es el 'sí' informal y '음' puede ser respuesta: descartarlos silenciaba
+    # turnos reales de una palabra (hallazgo de la verificación adversarial)
+    - hmm
+    - hm
+    - mmm
+    - mm
+    - uh
+    - um
   partials:                       # transcripción parcial en vivo (ventana deslizante, F5.2)
     enabled: true
     model_size: tiny             # modelo DEDICADO a parciales (+~0.9 GB RAM): jamás compiten

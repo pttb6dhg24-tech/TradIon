@@ -622,6 +622,13 @@ class EchoSafeOutput {
     console.info(`Ruta de salida TTS: ${this.mode}`);
   }
 
+  /** Reanimación tras una suspensión del navegador (cambio de pestaña — p. ej. al
+   *  diagnóstico —, llamada entrante, auriculares que (des)conectan): Safari y
+   *  Android pausan el <audio> del loopback y NO lo reanudan solos. */
+  async revive() {
+    if (this.audioEl && this.audioEl.paused) await this.audioEl.play().catch(() => {});
+  }
+
   async upgradeLoopback() {
     if (!IS_ANDROID || this.mode !== 'element' || !window.RTCPeerConnection) return;
     try {
@@ -1682,6 +1689,22 @@ const net = new WSClient({
 let player = null;
 let output = null;
 
+/** Reanima la cadena de audio si el navegador la suspendió (cambio de pestaña,
+ *  llamada, auriculares que (des)conectan). Safari/Android suspenden el
+ *  AudioContext o pausan el <audio> del loopback y NO los reanudan solos: el
+ *  texto seguía llegando por el WebSocket pero la voz quedaba MUDA hasta
+ *  recargar (visto en la Victus tras abrir diag.html en otra pestaña). */
+function reviveAudio() {
+  const ctx = state.audioCtx;
+  if (ctx && ctx.state !== 'running' && ctx.state !== 'closed') {
+    ctx.resume().catch(() => {});
+  }
+  output?.revive();
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) reviveAudio(); });
+window.addEventListener('focus', reviveAudio);
+document.addEventListener('pointerdown', reviveAudio, true);
+
 async function sit() {
   const name = $('nameInput').value.trim();
   if (!name) {
@@ -1714,6 +1737,11 @@ async function sit() {
       listener.setOrientation(0, 0, -1, 0, 1, 0);
     }
     await state.audioCtx.resume();
+    // Si el SO/navegador suspende el contexto con la app visible (WebKit lo hace
+    // al volver de otra pestaña), intentar reanudar en cuanto lo notifique
+    state.audioCtx.onstatechange = () => {
+      if (!document.hidden) reviveAudio();
+    };
     output = new EchoSafeOutput(state.audioCtx);
     await output.init();                    // el .play() del <audio> consume el gesto AQUÍ
     await startMic(state.audioCtx);
