@@ -351,10 +351,13 @@ class VoiceSession:
                 logger.debug("(%s) speaker-gate parcial falló (fail-open)",
                              self.speaker_id, exc_info=True)
             if sim is not None and gate.decide(sim) == "reject":
-                self._partial_inflight = False   # ¡liberar SIEMPRE el cerrojo!
-                logger.info("(%s) speaker-gate: parcial DESCARTADO — voz ajena "
-                            "(sim %.2f)", self.speaker_id, sim)
-                return
+                if gate.enforce:
+                    self._partial_inflight = False   # ¡liberar SIEMPRE el cerrojo!
+                    logger.info("(%s) speaker-gate: parcial DESCARTADO — voz ajena "
+                                "(sim %.2f)", self.speaker_id, sim)
+                    return
+                logger.info("(%s) speaker-gate SOMBRA: parcial sim %.2f — habría "
+                            "sido DESCARTADO", self.speaker_id, sim)
         try:
             text, stt_ms = await loop.run_in_executor(
                 self.engine.partial_executor, self.engine.transcribe_partial_sync,
@@ -408,7 +411,15 @@ class VoiceSession:
                 sim = await loop.run_in_executor(gate.executor, gate.score,
                                                  gate_clip, self.ref_embedding)
                 verdict = gate.decide(sim)
-                if verdict == "reject":
+                if not gate.enforce:
+                    # MODO SOMBRA: telemetría de TODOS los finales (la calibración con
+                    # voces reales sale de estas líneas), sin descartar jamás
+                    logger.info("(%s) speaker-gate SOMBRA: seg %d sim %.2f -> %s%s "
+                                "(%.1f s voz)", self.speaker_id, segment_id, sim,
+                                verdict,
+                                " — habría sido DESCARTADO" if verdict == "reject" else "",
+                                speech_ms / 1000.0)
+                elif verdict == "reject":
                     logger.info("(%s) speaker-gate: seg %d DESCARTADO — voz ajena "
                                 "(sim %.2f < %.2f)", self.speaker_id, segment_id,
                                 sim, gate.reject)
@@ -418,7 +429,7 @@ class VoiceSession:
                     await self.results.put(TranscriptionResult(
                         self.speaker_id, segment_id, self.language, "", seconds, 0.0))
                     return
-                if verdict == "gray":
+                elif verdict == "gray":
                     logger.info("(%s) speaker-gate: seg %d zona GRIS (sim %.2f) — pasa",
                                 self.speaker_id, segment_id, sim)
             except Exception:

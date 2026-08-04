@@ -43,6 +43,11 @@ class SpeakerGate:
     def __init__(self, settings: dict[str, Any]) -> None:
         cfg = (settings.get("stt") or {}).get("speaker_gate") or {}
         self.enabled = bool(cfg.get("enabled", False))
+        # MODO SOMBRA (enforce: false, el defecto): calcula y LOGUEA la similitud de
+        # cada segmento contra la huella del enroll pero JAMÁS descarta — una sesión
+        # normal se convierte en la calibración con voces reales. Solo con
+        # enforce: true el veredicto 'reject' tira segmentos de verdad.
+        self.enforce = bool(cfg.get("enforce", False))
         self.accept = float(cfg.get("accept", 0.55))
         self.reject = float(cfg.get("reject", 0.35))
         self.min_samples = int(float(cfg.get("min_speech_s", 1.0)) * 16000)
@@ -78,7 +83,9 @@ class SpeakerGate:
             return
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="spk-gate")
         self.available = True
-        logger.info("Speaker gate ACTIVO: %s (accept>=%.2f, reject<%.2f, min %.1f s)",
+        logger.info("Speaker gate ACTIVO en modo %s: %s (accept>=%.2f, reject<%.2f, min %.1f s)",
+                    "ENFORCE (descarta voz ajena)" if self.enforce
+                    else "SOMBRA (solo telemetría, no descarta)",
                     model.name, self.accept, self.reject, self.min_samples / 16000)
 
     def embed(self, audio_16k_f32: np.ndarray) -> np.ndarray:
