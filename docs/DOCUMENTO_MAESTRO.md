@@ -690,6 +690,20 @@ SVO↔SOV lo aprende el transformer (atención cruzada), no reglas manuales.
   de audio medidas (cable sí, micro BT no), tabla de configuración, estructura del
   repo, hoja de ruta y aviso reforzado de certificados como secretos.
 
+- **2026-08-04 (7) — Purga del historial (decisión del arquitecto).** El historial
+  se reescribió con `git filter-repo` para extirpar `config/certs/tradion.pem` y
+  `tradion-key.pem` de TODOS los commits (la clave privada era extraíble del
+  historial público). ⚠️ TODOS los hashes de commit cambiaron: las referencias a
+  hashes en entradas anteriores de este diario (7ff4152, dff20a6, 008f34c…) son
+  citas históricas del historial pre-purga y ya no resuelven. Copia de seguridad
+  completa pre-purga: `../TradIon-backup-pre-purga.bundle` (fuera del repo).
+  Recordatorio: la purga elimina los ficheros de las ramas, pero GitHub puede
+  retener commits colgantes cacheados un tiempo — por eso la defensa real es la
+  ROTACIÓN de certificados (hecha por el arquitecto) + repo privado; la purga es
+  la tercera capa. En la Victus NO hace falta re-clonar: `git fetch origin` +
+  `git reset --hard origin/main` re-apunta al historial nuevo conservando
+  `models/`, certificados y configuración (ficheros no rastreados intactos).
+
 ## 🔗 Fuentes
 
 - Referencia integral: https://github.com/QuentinFuxa/WhisperLiveKit · Topología: https://github.com/niedev/RTranslator
