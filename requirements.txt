@@ -34,3 +34,8 @@ piper-tts>=1.6             # síntesis ONNX ultra-rápida (RTF ~0.1 CPU); voces 
 
 # --- Alternativa STT acelerada por GPU de Apple (evaluar en F1) ---
 # mlx-whisper>=0.4
+
+# --- F11: Speaker Gate (verificación de hablante, OPCIONAL) ---
+# El gate es fail-open: sin este paquete (o sin el modelo) se desactiva solo.
+# Modelo: python scripts/setup_speaker_gate.py  ·  Benchmark: scripts/bench_speaker_gate.py
+sherpa-onnx>=1.12

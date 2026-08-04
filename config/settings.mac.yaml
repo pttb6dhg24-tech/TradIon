@@ -61,6 +61,17 @@ stt:
     - mm
     - uh
     - um
+  speaker_gate:                   # F11: verificación de hablante contra la huella del enroll
+    enabled: false                # ACTIVAR tras el benchmark (scripts/bench_speaker_gate.py)
+                                  # y tras descargar el modelo (scripts/setup_speaker_gate.py).
+                                  # Caza la cross-captura del MISMO idioma (la guardia LID
+                                  # solo ve idiomas distintos). Fail-open: sin modelo o sin
+                                  # sherpa-onnx se desactiva solo con un aviso.
+    model: models/speaker/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx
+    accept: 0.55                  # >= : es el dueño del micro (medido: mismo hablante ~0.79)
+    reject: 0.35                  # <  : voz ajena, segmento descartado (medido: ajenos 0.06-0.31)
+    min_speech_s: 1.0             # con menos voz no se decide (el error se dispara <2 s)
+    num_threads: 2                # hilos ONNX del extractor (~29 ms/segmento en CPU M3)
   partials:                       # transcripción parcial en vivo (ventana deslizante, F5.2)
     enabled: true
     model_size: tiny             # modelo DEDICADO a parciales (+~0.9 GB RAM): jamás compiten
