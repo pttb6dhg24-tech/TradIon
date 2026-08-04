@@ -666,6 +666,30 @@ SVO↔SOV lo aprende el transformer (atención cruzada), no reglas manuales.
   nuevas en el log: «Canal tomado por X (contienda, norm N, M pujas)» y «Canal
   liberado (cross-captura xN)».
 
+- **2026-08-04 (6) — Auditoría de seguridad del repositorio + README profesional.**
+  A petición del arquitecto antes de la siguiente prueba. **Hallazgo crítico: el
+  repositorio es PÚBLICO y la clave privada TLS (`config/certs/tradion-key.pem`)
+  quedó en el HISTORIAL** — se commiteó en la versión inicial (`7ff4152`), un
+  commit posterior la "eliminó" (`e845c85`) pero el borrado no la saca de git: se
+  extrae con `git show` (verificado). Alcance: es una clave de certificado hoja de
+  mkcert (localhost + IP LAN) — explotable solo con acceso a la LAN y la CA de
+  mkcert instalada en los móviles, pero es infraestructura que protege voz
+  biométrica. **Acciones del arquitecto (no delegables): (1) ROTAR los
+  certificados en la Victus (regenerar con mkcert — la clave filtrada queda
+  inservible), (2) hacer el repo PRIVADO en GitHub, (3) opcional si permanece
+  público: purgar el historial (`git filter-repo`) + force-push + re-clonar en la
+  Victus.** Resto del barrido LIMPIO: ningún fichero sensible rastreado hoy, sin
+  huellas vocales ni modelos jamás commiteados, sin patrones de secretos en el
+  contenido, la IP del README es un placeholder de ejemplo. Endurecido el
+  `.gitignore` (`config/certs/` entero, `*.crt/*.p12`, `.env.*`, `models/tmp/`).
+  **README reescrito de cero**: funcionalidades reales al día (turnos calibrados
+  por micro, guardia LID, speaker gate en sombra, 3D colaborativo, reconexión
+  invisible, diag), diagrama mermaid del pipeline, instalación por hardware,
+  flujo de actualización Windows (PowerShell sin `&&` + Copy-Item de la
+  plantilla), conectividad LAN-primero con la regla de firewall, recomendaciones
+  de audio medidas (cable sí, micro BT no), tabla de configuración, estructura del
+  repo, hoja de ruta y aviso reforzado de certificados como secretos.
+
 ## 🔗 Fuentes
 
 - Referencia integral: https://github.com/QuentinFuxa/WhisperLiveKit · Topología: https://github.com/niedev/RTranslator

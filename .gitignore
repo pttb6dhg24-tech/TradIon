@@ -16,6 +16,15 @@ models/*
 *.tmp
 
 # Credenciales y Certificados (Seguridad)
+# OJO: la clave privada TLS se commiteó una vez (7ff4152) y hubo que rotarla —
+# el directorio ENTERO queda vetado, no solo las extensiones
+config/certs/
 *.pem
 *.key
+*.crt
+*.p12
 .env
+.env.*
+
+# Huellas vocales temporales (biométricas: JAMÁS al repo)
+models/tmp/
