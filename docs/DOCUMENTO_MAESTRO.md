@@ -725,6 +725,39 @@ SVO↔SOV lo aprende el transformer (atención cruzada), no reglas manuales.
   pujas se loguean con su rms («norm N, rms R, M pujas») para diagnóstico. Próxima
   validación de turnos: con DOS personas.
 
+- **2026-08-04 (9) — 8ª sesión (altavoces en ambos dispositivos): FLOOR v2.2
+  VALIDADO, el fantasma era el bucle TTS.** El arquitecto probó adrede el peor
+  caso: Mac + iPhone con altavoz (la política del proyecto exige auriculares,
+  `require_headphones`, §1.6). Veredicto del log en tres partes. **(a) Turnos:
+  corregidos.** Las dos calibraciones salieron simétricas (0.0626 / 0.0641), las
+  pujas variaron con la voz real (0.21-2.50, sin saturación permanente), ambos
+  dispositivos ganaron contiendas de 2 pujas y ningún turno monopolizó el canal.
+  **(b) Las «respuestas de la IA» que nadie dijo eran el bucle de realimentación
+  cruzada**: el altavoz de A reproduce la traducción TTS de B → el micro del OTRO
+  dispositivo la captura → se transcribe → se vuelve a traducir → vuelve a sonar.
+  El AEC del navegador solo cancela el altavoz PROPIO, nunca el del vecino. La
+  pata cross-idioma la mató la guardia LID (7 descartes correctos), pero la pata
+  del MISMO idioma es invisible para el LID: 'How much? I am.' (sim 0.18) y 'What
+  was nice boy?' (sim 0.20) se colaron y sonaron como respuestas fantasma. Además
+  NLLB fabricó '- Bien.' desde 'How are you?' — turno inventado SIN guion inicial,
+  que el recorte anti-diálogo no cubría (exigía guion al inicio): corregido en
+  `_strip_invented_dialog`. La verificación adversarial tumbó la primera versión
+  del fix (recortar todo '. - ' amputaba contenido real: '9 a.m. - 6 p.m.',
+  reformateos de fuente con coma) → versión final quirúrgica: sin guion inicial
+  solo se recorta el patrón pregunta→respuesta ('? - X'), 11 casos de regresión
+  OK. La misma revisión destapó que el gate de PARCIALES decidía con 800 ms de
+  voz (bajo su propio mínimo de 1.0 s) — con enforce habría descartado arranques
+  de turno legítimos del subtitulado en vivo: ahora exige el mismo suelo de voz
+  real que los finales. **(c) La sesión regaló la
+  calibración de segunda voz que el gate esperaba**: las voces TTS (es-ald,
+  en-alan) son voces ajenas de manual. Separación medida — voz propia 0.44-0.77
+  (mínimo puro 0.46), TTS vecino -0.04-0.33 (máximo 0.33 en parciales, 0.20 en
+  finales). Con ese margen se enciende **enforce: true en la Victus**: descarta
+  solo `reject` (<0.35), la zona gris pasa (fail-open), y habría matado
+  exactamente los dos fantasmas que el LID no vio. Los grises mezclados (~0.39,
+  audio propio+TTS solapado) siguen siendo posibles CON ALTAVOCES: la defensa
+  real en reunión sigue siendo auriculares; el gate es la red de seguridad.
+
 ## 🔗 Fuentes
 
 - Referencia integral: https://github.com/QuentinFuxa/WhisperLiveKit · Topología: https://github.com/niedev/RTranslator
