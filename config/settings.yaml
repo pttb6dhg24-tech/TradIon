@@ -128,6 +128,21 @@ room:
                                   # libera con el segmento aún abierto, otro móvil puede
                                   # robar el canal en una pausa y el resto de TU frase
                                   # se pone a cero (media frase perdida)
+    acquire_rel: 0.20             # v2: tomar el canal exige ADEMÁS este % del nivel de voz
+                                  # calibrado de TU micro (tope 3x el absoluto): el 0.025
+                                  # igual para todos dejaba que el micro más sensible (AGC)
+                                  # robara el canal con la voz del vecino. 0.20 y no 0.30:
+                                  # el enroll se habla con el micro CERCA y la mesa queda
+                                  # lejos; la adaptación EMA lo corrige con el uso
+    hold_rel: 0.10                # mantener: % relativo del nivel propio (tope 3x)
+    contest_ms: 240               # ventana de contienda: gana quien suene más fuerte
+                                  # RELATIVO a su calibración. >= periodo de frame del
+                                  # cliente (128 ms) + jitter WiFi, o la puja del hablante
+                                  # real llega tarde y se regresa al first-in-wins
+    crosstalk_cooldown_s: 1.0     # cross-captura CORROBORADA => canal liberado y ese micro
+                                  # 1 s en cuarentena
+    crosstalk_confirmations: 2    # veredictos LID seguidos (<=10 s) antes de quitar el canal:
+                                  # uno solo puede ser un cambio de idioma legítimo del dueño
     max_hold_s: 30                # tope duro anti-inanición (ruido de fondo permanente)
     reacquire_cooldown_s: 2       # cuarentena tras expulsión por max_hold_s (si no, re-toma el canal en el siguiente frame)
   max_speakers: 6

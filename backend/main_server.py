@@ -82,7 +82,8 @@ from typing import Any, Optional
 import numpy as np
 from aiohttp import WSCloseCode, WSMsgType, web
 
-from backend.core_engine import AudioFormatError, CoreEngine, EngineError, TranscriptionResult
+from backend.core_engine import (AudioFormatError, CoreEngine, EngineError,
+                                 TranscriptionResult, voiced_rms)
 from backend.settings import PROJECT_ROOT, load_settings
 from backend.translation_engine import TextTranslator, TranslationError
 from backend.tts_engine import TTSEngine, TTSError
@@ -96,6 +97,9 @@ PUMP_DRAIN_TIMEOUT_S = 15.0  # margen para enrutar los últimos segmentos al sal
 
 def _dumps(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False)
+
+
+# voiced_rms vive en core_engine (lo usan el enroll aquí y la adaptación en _run_stt)
 
 
 def _normalize_text(s: str) -> str:
@@ -169,6 +173,7 @@ class Client:
     )
     seq: int = 0
     is_enrolled: bool = False
+    voice_rms: float = 0.0                    # nivel de voz calibrado de ESTE micro (enroll)
     seat_idx: int = -1                        # plaza hexagonal asignada en el join
     x: float = 0.0
     y: float = 0.0
@@ -210,6 +215,27 @@ class TradIonServer:
         # siguiente frame (≤128 ms): cuarentena tras una expulsión por max_hold_s
         self.floor_reacquire_cooldown_s = float(floor_cfg.get("reacquire_cooldown_s", 2.0))
         self.floor_cooldown_until: dict[str, float] = {}   # speaker_id -> monotonic
+        # Floor v2 — umbrales RELATIVOS a la voz calibrada de cada micro + contienda:
+        # los micros no son comparables entre sí (AGC), así que tomar el canal exige
+        # un % del nivel PROPIO, los empates los gana quien suena más fuerte relativo
+        # a su calibración, y una cross-captura demostrada (LID) suelta el canal
+        # acquire_rel 0.20 (no 0.30): la calibración se hace con el micro CERCA y la
+        # conversación es a distancia de mesa (~1/2-1/4 de amplitud sin AGC); la
+        # adaptación EMA con los finales propios corrige el sesgo con el uso
+        self.floor_acquire_rel = float(floor_cfg.get("acquire_rel", 0.20))
+        self.floor_hold_rel = float(floor_cfg.get("hold_rel", 0.10))
+        # contest_ms >= periodo de frame del cliente (128 ms) + jitter WiFi: con 120
+        # la puja del hablante real podía llegar TRAS la resolución (fase de bloque
+        # aleatoria) y se regresaba al first-in-wins que la contienda corrige
+        self.floor_contest_s = float(floor_cfg.get("contest_ms", 240)) / 1000.0
+        self.floor_crosstalk_cooldown_s = float(floor_cfg.get("crosstalk_cooldown_s", 1.0))
+        # Corroboración: UN veredicto LID no basta para quitar el canal (un cambio de
+        # idioma legítimo a mitad de frase o un falso positivo costaría el turno +1 s
+        # a cero al dueño). Hacen falta N seguidos en <=10 s del mismo micro.
+        self.floor_crosstalk_confirmations = int(floor_cfg.get("crosstalk_confirmations", 2))
+        self._crosstalk_streak: dict[str, tuple[int, float]] = {}   # id -> (racha, t_último)
+        self.floor_last_acquired: dict[str, float] = {}   # id -> monotonic del último grant
+        self._floor_contest: Optional[dict] = None   # {"start", "bids": {id: mejor_norm}}
 
         # B1: las huellas vocales temporales viven en models/tmp (no en el tmp del SO) y
         # se BARREN al arrancar: un crash jamás deja audio biométrico huérfano en disco
@@ -288,10 +314,36 @@ class TradIonServer:
         de voz (release_ms) o por tope duro de posesión (max_hold_s, anti-inanición)."""
         try:
             while True:
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.05)
+                now = time.monotonic()
+                # Resolver la CONTIENDA de adquisición (floor v2): pasada la
+                # micro-ventana, el canal es de quien sonó más fuerte relativo
+                # a su propia calibración
+                contest = self._floor_contest
+                if contest is not None:
+                    if self.floor_owner is not None:
+                        self._floor_contest = None    # alguien ya lo tiene: obsoleta
+                    elif now - contest["start"] >= self.floor_contest_s:
+                        self._floor_contest = None
+                        # Mejor puja VÁLIDA (presente y sin cuarentena): si el mejor
+                        # cayó durante la ventana, hereda el subcampeón — antes la
+                        # contienda entera se descartaba y nadie recibía el canal
+                        valid = [(n, cid) for cid, n in contest["bids"].items()
+                                 if cid in self.clients
+                                 and now >= self.floor_cooldown_until.get(cid, 0.0)]
+                        if valid:
+                            best_norm, winner = max(valid)
+                            self.floor_owner = winner
+                            self.floor_acquired_at = now
+                            self.floor_last_active = now
+                            self.floor_last_acquired[winner] = now
+                            self._broadcast({"type": "floor_acquired",
+                                             "speaker_id": winner})
+                            logger.info("Canal tomado por %s (contienda, norm %.2f, "
+                                        "%d pujas)", winner, best_norm,
+                                        len(contest["bids"]))
                 if self.floor_owner is None:
                     continue
-                now = time.monotonic()
                 reason = None
                 if now - self.floor_last_active > self.floor_release_s:
                     reason = "inactividad"
@@ -402,6 +454,7 @@ class TradIonServer:
                 client.x, client.y, client.angle = fp["x"], fp["y"], fp["angle"]
             # F11: la huella de locutor también sobrevive (sin recomputar)
             self.engine.set_speaker_reference_embedding(speaker_id, fp.get("spk_emb"))
+            client.voice_rms = float(fp.get("voice_rms", 0.0))   # calibración del micro
             # Sus voces ya están decididas: cargar los ONNX de fondo desde ya
             self.tts.prewarm_voices(client)
         loop = asyncio.get_running_loop()
@@ -489,6 +542,8 @@ class TradIonServer:
             self.floor_owner = None
             self._broadcast({"type": "floor_released", "speaker_id": client.speaker_id})
         self.floor_cooldown_until.pop(client.speaker_id, None)
+        self.floor_last_acquired.pop(client.speaker_id, None)
+        self._crosstalk_streak.pop(client.speaker_id, None)
         logger.info("- %s (%s) — %d en sala", client.name, client.speaker_id, len(self.clients))
 
     # ---------- pipeline de enrutamiento ----------
@@ -526,11 +581,55 @@ class TradIonServer:
                     "segment_id": result.segment_id,  # el cliente ordena parciales vs finales
                 })
             return
+        if result.crosstalk:
+            # El LID indica voz AJENA en este micro. Tres salvaguardas antes de
+            # actuar sobre el canal (hallazgos de la auditoría del floor v2):
+            # (1) CORROBORACIÓN: un solo veredicto no basta — un cambio de idioma
+            #     legítimo ('¿cómo se dice...?') o un falso positivo costaría el
+            #     turno al dueño real. Hacen falta N seguidos en <=10 s.
+            # (2) FRESCURA: la evidencia llega ~1 s tarde (latencia del STT); si el
+            #     dispositivo RE-adquirió el canal DESPUÉS de cerrar ese segmento,
+            #     la posesión actual es legítima y no se toca.
+            # (3) El segmento en sí ya fue descartado en transcribe_sync siempre.
+            now_mono = time.monotonic()
+            count, last = self._crosstalk_streak.get(client.speaker_id, (0, 0.0))
+            count = count + 1 if now_mono - last <= 10.0 else 1
+            self._crosstalk_streak[client.speaker_id] = (count, now_mono)
+            evidencia_fresca = (self.floor_last_acquired.get(client.speaker_id, 0.0)
+                                <= result.closed_at)
+            if count >= self.floor_crosstalk_confirmations and evidencia_fresca:
+                # Robo corroborado: soltar el canal y cuarentena breve para que el
+                # dispositivo del hablante REAL gane la siguiente contienda — sin
+                # esto el micro sensible re-robaba frase tras frase (medido: 6
+                # robos seguidos en la sesión del 2026-08-04)
+                self.floor_cooldown_until[client.speaker_id] = max(
+                    self.floor_cooldown_until.get(client.speaker_id, 0.0),
+                    now_mono + self.floor_crosstalk_cooldown_s)
+                if self.floor_owner == client.speaker_id:
+                    self.floor_owner = None
+                    self._broadcast({"type": "floor_released",
+                                     "speaker_id": client.speaker_id})
+                    logger.info("Canal liberado (cross-captura x%d) — era de %s",
+                                count, client.speaker_id)
+            return
         if not result.ok:
             self._send_json(client, {"type": "error", "message": f"STT: {result.error}"})
             return
         if not result.text:
             return
+
+        # Final PROPIO válido: la racha de cross-captura se corta, y el nivel de voz
+        # calibrado se ADAPTA al de la conversación real (EMA suave) — el enroll se
+        # midió con el micro cerca; en mesa el nivel baja y el umbral relativo debe
+        # seguirlo para no dejar al dueño sin poder tomar su propio canal
+        self._crosstalk_streak.pop(client.speaker_id, None)
+        if result.voiced_rms > 0:
+            if client.voice_rms > 0:
+                client.voice_rms = 0.8 * client.voice_rms + 0.2 * result.voiced_rms
+            else:
+                client.voice_rms = result.voiced_rms
+            if client.token in self.footprints:
+                self.footprints[client.token]["voice_rms"] = client.voice_rms
 
         self._broadcast({
             "type": "subtitle",
@@ -699,7 +798,7 @@ class TradIonServer:
             loop = asyncio.get_running_loop()
             # force_language=True (auditoría A2): en la calibración el idioma se conoce
             # con certeza — el LID aquí solo servía para romper el enroll con acentos
-            heard, _stt_ms = await loop.run_in_executor(
+            heard, _stt_ms, _ = await loop.run_in_executor(
                 self.engine.stt_executor, self.engine.transcribe_sync,
                 audio, client.language, True,
             )
@@ -761,27 +860,51 @@ class TradIonServer:
 
                         safe_data = pcm
 
+                        # Floor v2 — umbrales RELATIVOS a la voz calibrada de ESTE
+                        # micro (con suelo absoluto y tope 3x): el 0.025 igual para
+                        # todos favorecía sistemáticamente al micrófono más sensible
+                        # (iPhone con AGC), que tomaba el canal con la voz DEL VECINO
+                        # y la frase del hablante real moría puesta a cero (medido:
+                        # 6 robos seguidos, todos acabando en LID cross-captura)
+                        vr = client.voice_rms
+                        if vr > 0:
+                            acq_thr = max(self.floor_acquire_rms,
+                                          min(self.floor_acquire_rel * vr,
+                                              self.floor_acquire_rms * 3))
+                            hold_thr = max(self.floor_hold_rms,
+                                           min(self.floor_hold_rel * vr,
+                                               self.floor_hold_rms * 3))
+                        else:
+                            acq_thr, hold_thr = self.floor_acquire_rms, self.floor_hold_rms
+
                         if self.floor_owner == client.speaker_id:
-                            # Histéresis: mantener el turno solo requiere hold_rms (más bajo
-                            # que acquire): las palabras finales suaves ya no sueltan el canal
-                            # a mitad de frase. El silencio real sigue sin renovar el turno.
-                            if rms > self.floor_hold_rms:
+                            # Histéresis: mantener el turno es más barato que tomarlo
+                            # (finales suaves de frase). El silencio real no renueva.
+                            if rms > hold_thr:
                                 self.floor_last_active = now_mono
                         elif now_mono < self.floor_cooldown_until.get(client.speaker_id, 0.0):
-                            # Cuarentena post-max_hold_s: TODO el audio del expulsado se
-                            # silencia (no solo el que supera acquire_rms) — su ruido suave
-                            # seguía entrando a SU pipeline y generaba segmentos basura
+                            # Cuarentena (max_hold o cross-captura): TODO su audio a cero
                             safe_data = bytes(len(pcm))
-                        elif rms > self.floor_acquire_rms:
+                        elif rms > acq_thr:
                             if self.floor_owner is None:
-                                # Toma del canal (First-In: la latencia acústica favorece
-                                # al hablante real frente a los ecos de los otros móviles)
-                                self.floor_owner = client.speaker_id
-                                self.floor_acquired_at = now_mono
-                                self.floor_last_active = now_mono
-                                self._broadcast({"type": "floor_acquired",
-                                                 "speaker_id": client.speaker_id})
-                                logger.info("Canal tomado por %s", client.speaker_id)
+                                # CONTIENDA (v2): el canal ya no es del primer frame que
+                                # cruza el umbral — se abre una micro-ventana y lo gana
+                                # quien suena más fuerte RELATIVO A SU CALIBRACIÓN (el
+                                # hablante real domina en su propio micro por pura
+                                # física). El divisor lleva SUELO (un enroll flojo con
+                                # vr < 0.025 inflaba norm y ganaba SIEMPRE con la voz
+                                # del vecino) y la puja se acota a 2.5. Se guardan las
+                                # pujas de TODOS: si el mejor cae (cooldown/se va), el
+                                # subcampeón hereda el grant.
+                                norm = min(rms / max(vr, self.floor_acquire_rms), 2.5)
+                                contest = self._floor_contest
+                                if contest is None:
+                                    self._floor_contest = {"start": now_mono,
+                                                           "bids": {client.speaker_id: norm}}
+                                else:
+                                    bids = contest["bids"]
+                                    if norm > bids.get(client.speaker_id, 0.0):
+                                        bids[client.speaker_id] = norm
                             else:
                                 # Canal ocupado por otro: descartar (crosstalk)
                                 safe_data = bytes(len(pcm))
@@ -867,6 +990,16 @@ class TradIonServer:
                                 # captura del enroll sirve de referencia de identidad)
                                 spk_emb = await self.engine.set_speaker_reference(
                                     client.speaker_id, samples)
+                                # Floor v2: nivel de voz de referencia de ESTE micro
+                                # (base de los umbrales relativos del turno)
+                                client.voice_rms = await loop.run_in_executor(
+                                    None, voiced_rms, samples)
+                                logger.info("(%s) voz calibrada del micro: RMS %.4f "
+                                            "(umbral de turno ~%.4f)",
+                                            client.speaker_id, client.voice_rms,
+                                            max(self.floor_acquire_rms,
+                                                min(self.floor_acquire_rel * client.voice_rms,
+                                                    self.floor_acquire_rms * 3)))
                             # La voz del PROPIO idioma no la oye nadie (los de tu idioma oyen
                             # tu voz real): se asigna una voz afín por f0 para CADA idioma
                             # DESTINO, y el cliente la confirma/cambia antes de entrar a la mesa
@@ -926,6 +1059,7 @@ class TradIonServer:
                                     "speaker_id": client.speaker_id,   # identidad estable por dispositivo
                                     "last_seg": 0,   # segment_id más alto difundido (monotonía)
                                     "spk_emb": spk_emb,   # huella de locutor (F11, o None)
+                                    "voice_rms": client.voice_rms,   # calibración del micro (floor v2)
                                 }
                             
                             logger.info("+ %s (%s, %s) completó calibración", client.name, client.language, client.speaker_id)
