@@ -28,3 +28,20 @@ config/certs/
 
 # Huellas vocales temporales (biométricas: JAMÁS al repo)
 models/tmp/
+
+# ---------------------------------------------------------------------------
+# MATERIAL INTERNO — el repositorio documenta el SOFTWARE, nunca el NEGOCIO.
+# Estrategia comercial, precios, guiones de vídeo, material de venta y notas
+# de financiación viven FUERA del repositorio (~/Documents/TradIon-privado/).
+# Se publicó una vez una estrategia de monetización con precios y hubo que
+# purgar el historial: estas reglas son la red de seguridad, no la política.
+# ---------------------------------------------------------------------------
+docs/privado/
+docs/ESTRATEGIA*.md
+docs/VIDEO*.md
+docs/*PRECIOS*
+docs/*NEGOCIO*
+
+# Herramientas de asistentes de IA: configuración local y árboles de trabajo,
+# específicos de una máquina y sin valor para quien clone el repositorio
+.claude/

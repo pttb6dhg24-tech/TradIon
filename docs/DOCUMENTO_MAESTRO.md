@@ -849,8 +849,8 @@ SVO↔SOV lo aprende el transformer (atención cruzada), no reglas manuales.
   distancia por 1.44, que habría saturado los arrastres al borde.
 
 - **2026-08-05 — Fase 0: TradIon pasa a AGPL-3.0 con modelo dual (decisión del
-  arquitecto).** Tras la auditoría del 04-08 (ver `THIRD_PARTY_LICENSES.md`), el
-  repositorio tenía un `LICENSE` incoherente: una paráfrasis abreviada de CC-BY-NC-4.0
+  arquitecto).** Tras una auditoría de licencias con fuentes primarias (resultado público
+  en `THIRD_PARTY_LICENSES.md`), el repositorio tenía un `LICENSE` incoherente: una paráfrasis abreviada de CC-BY-NC-4.0
   seguida de una cláusula que declaraba el código MIT —sin incluir el texto de la MIT— y
   un badge MIT en el README. Efecto: GitHub no detectaba licencia, y el README **invitaba
   por escrito** a explotar comercialmente el código. Sustituido por el texto **íntegro y
