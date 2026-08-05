@@ -758,6 +758,96 @@ SVO↔SOV lo aprende el transformer (atención cruzada), no reglas manuales.
   audio propio+TTS solapado) siguen siendo posibles CON ALTAVOCES: la defensa
   real en reunión sigue siendo auriculares; el gate es la red de seguridad.
 
+- **2026-08-04 (10) — F12 «Tela de araña»: profundidad 3D intuitiva (GO del
+  arquitecto) + tres defectos que la tela destapó al usarse como regla.**
+  Implementado tal como se diseñó, todo en el cliente: **(a)** anillos
+  concéntricos y radios en el modal de la mesa (r = 1/3, 2/3 y 1 → 29,3 / 58,7 /
+  88 % del ancho, que es exactamente el mapeo de las fichas: 50 % + pos·44 %) como
+  escala VISUAL de distancia, sin un solo número para el usuario; **(b)** filtro
+  «de aire» por hablante (BiquadFilter lowpass entre la ganancia y el panner) con
+  el corte interpolado EXPONENCIALMENTE con la distancia oyente→fuente — el aire
+  real absorbe primero los agudos, así que una voz lejana suena APAGADA, no solo
+  más baja; **(c)** conmutador Sutil (16 k→7 kHz) / Inmersivo (16 k→3 kHz),
+  persistido en localStorage y aplicado en caliente con `setTargetAtTime` (sin
+  clicks). Decisión de diseño revertida sobre la marcha: la primera versión subía
+  también el `rolloffFactor` a 0.85 en Inmersivo, y eso **re-introducía el defecto
+  ya corregido en F6** (el comensal de enfrente 5x más bajo, ilegible) además de
+  dar un salto de ganancia audible a mitad de frase (rolloffFactor es atributo, no
+  AudioParam) → el volumen queda IGUAL en los dos modos (0.35) y la profundidad la
+  aporta solo el filtro, que se desliza y no quita sonoridad. El corte mínimo se
+  fijó en 3000 Hz para que la banda telefónica (300-3400 Hz) quede intacta: medido
+  con `getFrequencyResponse`, en el peor caso (asientos diametralmente opuestos, modo
+  Inmersivo) 3400 Hz solo cae 4,3 dB — la voz traducida sigue plenamente
+  inteligible, que es el producto.
+
+  **Tres defectos REALES cazados al medir contra la tela** (dos de ellos anteriores
+  a F12, invisibles hasta tener una regla en pantalla): **(1) las fichas se
+  dibujaban 26 px arriba-izquierda de su posición real** — regresión del lote de UI
+  del 2026-08-04: al cambiar el `transform` de la ficha de `rotate()` a
+  `translate(-50%,-50%)` quedó el `margin: -26px` viejo y el centrado se aplicaba
+  DOS veces; el audio (que usa pos.x/pos.y) y el plano discrepaban, y en pleno
+  arrastre la ficha flotaba fuera del dedo. Medido: desfase −26 px con margen, 0 px
+  sin él (verificado en los tres anillos y en vertical). **(2) el lowpass tenía un
+  realce de +1,7 dB** en vez de ser plano: en Web Audio la `Q` de un lowpass es
+  «resonancia en DECIBELIOS» (el filtro usa 10^(Q/20)), así que el 0.707 «de libro»
+  daba Q efectiva 1.085 — siseo añadido a las voces lejanas, lo contrario de lo
+  buscado. Con Q = 20·log10(1/√2) = −3,01 la respuesta medida es Butterworth de
+  manual: 0 dB hasta 3,4 kHz, −3,01 dB exactos en el corte, monótona, cero realce.
+  **(3) la suelta del arrastre no posicionaba**: `pointerup` no leía sus propias
+  coordenadas y solo valía el último `pointermove`; como los navegadores AGRUPAN los
+  move, en un gesto rápido la ficha (y su panner) quedaban cortos — verificado con
+  eventos explícitos: la suelta ahora reposiciona y el `move` al servidor ya lleva
+  la posición final. De paso se blindó `seats.ensure`, que elegía plaza por
+  `positions.size`: tras salir el 2º de 3, el siguiente en entrar caía sobre el 3º
+  (misma silla, mismo PannerNode, cero separación espacial entre dos voces). Ahora
+  toma la primera plaza hexagonal LIBRE. El servidor ya repartía sin colisión
+  (`taken`/`next`), así que era un respaldo latente, no un fallo en producción.
+
+  **Verificación adversarial de F12 (5 lentes + refutación por escépticos, 17
+  agentes): 9 defectos confirmados, 3 refutados.** Los tres de severidad ALTA:
+  **(i) la app entera moría en un iPhone con las cookies bloqueadas** — LEER
+  `localStorage` LANZA `SecurityError` (no devuelve null) cuando el origen tiene
+  el almacenamiento bloqueado (Safari «Bloquear todas las cookies», un ajuste de
+  un móvil cualquiera), y la lectura de la preferencia de profundidad estaba en
+  el NIVEL SUPERIOR de un script clásico: la excepción abortaba app.js completo
+  —ni cableado de eventos ni `updateUI`— y el lobby se pintaba perfecto mientras
+  «Sentarse» no hacía absolutamente nada, sin un solo error visible. Reproducido
+  en un iframe con el getter lanzando: sin guarda, `seats is not defined`; con
+  ella, la app arranca íntegra. Introducido por F12 y corregido en el mismo lote.
+  **(ii) el ducking half-duplex quedaba MUERTO tras volver al lobby y re-sentarse**
+  (defecto PRE-EXISTENTE, no de F12): `window.duckCount` es global y un
+  AudioContext CERRADO nunca dispara los `onended` pendientes, así que el contador
+  se quedaba en ≥1 para siempre; en la sesión siguiente el primer TTS lo subía a 2,
+  la condición `=== 1` no mandaba `duck` al worklet y **el micro dejaba de mutearse
+  mientras hablaba el altavoz** — exactamente el bucle de realimentación que se
+  autopsió en la 8ª sesión, pero por una vía distinta. Reseteado en
+  `_teardownAudio`. **(iii) el modal de la mesa dejaba «Listo» fuera de pantalla**:
+  la fila de profundidad subió la tarjeta de 549 a 656 px y en un iPhone SE/8
+  vertical el botón caía fuera, sin Escape ni clic-al-fondo — el usuario atrapado
+  hasta recargar. Corregido en los TRES modales con `align-items: flex-start` +
+  `overflow-y: auto` + `margin: auto` en la tarjeta (el centrado de flex deja lo
+  que desborda por arriba fuera del área scrolleable). Verificado a 375×553:
+  scrollHeight 696 > clientHeight 553 y `elementFromPoint` sobre el botón devuelve
+  `planClose`.
+
+  Y un cuarto hallazgo que salva la función de ser decorativa: **el modo por
+  defecto (Sutil) no se oía en absoluto**. TODAS las voces Piper del catálogo son
+  de 22050 Hz (Nyquist 11025; `carlfm-x_low` incluso 16000), así que barrer desde
+  16 kHz gastaba el recorrido donde no hay señal: a distancia de asientos
+  CONTIGUOS del hexágono el corte caía en 11882 Hz —por encima del Nyquist de la
+  fuente, un no-op demostrable— y el diferencial contiguo↔enfrentado era de
+  0,12/0,57/1,43 dB a 4/6/8 kHz, por debajo del umbral perceptible de inclinación
+  espectral en voz (~1-3 dB). Con `fNear` bajado a 11000 (y `fFar` de Sutil a
+  4500) el diferencial sube a 0,63/2,14/3,65 dB — ya audible — y el peor caso de
+  Inmersivo sigue dejando 3400 Hz en −4,2 dB. Completan el lote dos
+  desincronizaciones de panner al reconectar (el roster pisaba `seats.positions`
+  sin mover los panners, y la rama de `peer_joined` sin grace tampoco: desde F12
+  el «aire» sí se recalculaba, así que las dos pistas de profundidad se
+  CONTRADECÍAN — ficha al lado sonando brillante pero floja y desde el frente).
+  Refutados con razón: el desfase de 26 px y el salto de `rolloffFactor` (ya
+  corregidos antes de que los juzgaran) y una propuesta de re-normalizar la
+  distancia por 1.44, que habría saturado los arrastres al borde.
+
 ## 🔗 Fuentes
 
 - Referencia integral: https://github.com/QuentinFuxa/WhisperLiveKit · Topología: https://github.com/niedev/RTranslator

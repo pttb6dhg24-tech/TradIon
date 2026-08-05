@@ -79,7 +79,29 @@
         su voz sonará desde esa dirección (audio 3D, mejor con auriculares).</p>
       <div id="plan" class="plan">
         <div class="plan-table"></div>
+        <!-- F12: tela de araña — la escala visual de distancia (sin números).
+             Va DESPUÉS de la mesa para pintar encima (la mesa es opaca); las
+             fichas se añaden después y quedan encima de ambas. -->
+        <div class="plan-web" aria-hidden="true">
+          <div class="plan-ring r1"></div>
+          <div class="plan-ring r2"></div>
+          <div class="plan-ring r3"></div>
+          <div class="plan-spoke s1"></div>
+          <div class="plan-spoke s2"></div>
+          <div class="plan-spoke s3"></div>
+          <div class="plan-spoke s4"></div>
+        </div>
       </div>
+      <div class="depth-row">
+        <span id="depthLabel" class="depth-label" data-i18n="depth_label">Profundidad</span>
+        <!-- aria-labelledby y NO aria-label: así el nombre accesible del grupo
+             sigue al idioma de la interfaz (data-i18n solo toca textContent) -->
+        <div class="depth-toggle" role="group" aria-labelledby="depthLabel">
+          <button type="button" data-depth="sutil" data-i18n="depth_sutil" aria-pressed="true">Sutil</button>
+          <button type="button" data-depth="inmersivo" data-i18n="depth_inmersivo" aria-pressed="false">Inmersivo</button>
+        </div>
+      </div>
+      <p class="modal-hint depth-hint" data-i18n="depth_hint">La tela marca la distancia: cuanto más lejos quede una ficha de la tuya, más tenue y apagada sonará su voz.</p>
       <button id="planClose" class="modal-close" data-i18n="plan_done">Listo</button>
     </div>
   </div>
