@@ -136,7 +136,9 @@ python scripts/setup_speaker_gate.py
 python scripts/bench_speaker_gate.py
 ```
 
-Arranca **en modo sombra** (solo telemetría en los logs, jamás descarta). Calíbralo con dos voces reales de tu mesa (`python scripts/bench_speaker_gate.py voz1.wav voz2.wav`) antes de plantearte `enforce: true` en `settings.yaml`.
+El benchmark sin argumentos necesita las previews del catálogo, que se generan en el **primer arranque del servidor** (paso 7): ejecútalo después de haber arrancado una vez.
+
+Cada plantilla lo entrega de forma distinta: en **Mac** viene apagado (`enabled: false`); en **Windows** viene **activo y en `enforce: true`** —descarta solo los segmentos claramente ajenos (por debajo de `reject`, 0.35); la zona gris [0.35, 0.55) pasa igualmente— con los umbrales calibrados en sesiones reales (voz propia 0.44-0.77, TTS del dispositivo vecino ≤0.33). Para estrenarlo en otra mesa, ponlo en `enforce: false` (**modo sombra**: solo telemetría en los logs, jamás descarta), recoge una sesión y calibra con dos voces reales de tu mesa (`python scripts/bench_speaker_gate.py voz1.wav voz2.wav`) antes de volver a activarlo.
 
 ### 7. Arrancar el servidor
 
@@ -150,14 +152,26 @@ La primera vez descargará los modelos de IA a `models/` (varios minutos). Despu
 
 ## 🔄 Actualizar el servidor (Windows / PowerShell)
 
-Tras cada `git pull`, restaura tu configuración activa desde la plantilla (evita conflictos de merge):
+En esa máquina la **fuente de verdad** de la configuración activa es la plantilla `config\settings.windows.yaml`; `config\settings.yaml` es solo la copia de trabajo que sale de ella. Como `settings.yaml` **también está versionado** —y lo que viaja en el repo es la variante del Mac—, tu copia local figura siempre como modificada: descártala **antes** del pull y regenérala después.
 
 ```powershell
+git restore config/settings.yaml
 git pull
 Copy-Item config\settings.windows.yaml config\settings.yaml -Force
 ```
 
+> [!WARNING]
+> Si haces el `git pull` sin descartar antes `settings.yaml`, git **aborta la actualización** en cuanto el commit entrante toque ese fichero (`error: Your local changes to the following files would be overwritten by merge`) y el servidor se queda en la versión vieja. Y como el `Copy-Item -Force` lo sobrescribe, cualquier ajuste que quieras conservar en esta máquina va en `config\settings.windows.yaml` (y se commitea), **nunca solo en `settings.yaml`**. Con git anterior a 2.23: `git checkout -- config/settings.yaml`.
+
 > 💡 PowerShell 5.1 no acepta `&&` para encadenar comandos: ejecútalos en líneas separadas (o con `;`). Tras actualizar, los móviles deben recargar la página una vez (el servidor ya sirve el frontend con `no-cache`, pero la primera recarga tras una versión antigua puede necesitar cerrar y reabrir la pestaña).
+
+Si la actualización trae cambios del **Speaker Gate** (paso 6), asegura el modelo y recalibra desde PowerShell:
+
+```powershell
+pip install sherpa-onnx
+python scripts/setup_speaker_gate.py
+python scripts/bench_speaker_gate.py
+```
 
 ---
 
