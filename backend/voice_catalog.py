@@ -44,26 +44,47 @@ class VoiceProfile:
     tone: str          # grave | medio | agudo
     onnx: str          # archivo en models/piper/
     speaker_id: Optional[int] = None   # voces multi-hablante (sharvard)
+    # Licencia del CORPUS con el que se entrenó la voz (auditoría 2026-08-05, ver
+    # THIRD_PARTY_LICENSES.md). 'commercial' es el campo que decide si la voz puede
+    # servirse con licensing.commercial_use activo:
+    #   ok        -> corpus de dominio público o permisivo
+    #   atribuir  -> permitido citando al autor del corpus
+    #   no        -> corpus NO comercial: prohibido cobrar por su uso
+    #   incierto  -> licencia no acreditable: se trata como 'no' por prudencia
+    license: str = "incierto"
+    commercial: str = "incierto"
 
 
 # Curado a mano desde rhasspy/piper-voices (todas verificadas descargables).
 # El f0 de referencia NO se anota aquí: se mide sobre la preview real (cache JSON).
 CATALOG: list[VoiceProfile] = [
     # --- Español ---
-    VoiceProfile("es-davefx",   "es", "Dave (España)",     "M", "medio",  "es_ES-davefx-medium.onnx"),
-    VoiceProfile("es-carlfm",   "es", "Carl (España)",     "M", "grave",  "es_ES-carlfm-x_low.onnx"),
+    VoiceProfile("es-davefx",   "es", "Dave (España)",     "M", "medio",  "es_ES-davefx-medium.onnx",
+                 license="CC0-1.0 (corpus Nabu Casa)", commercial="ok"),
+    VoiceProfile("es-carlfm",   "es", "Carl (España)",     "M", "grave",  "es_ES-carlfm-x_low.onnx",
+                 license="Dominio público", commercial="ok"),
     # speaker_id verificado por f0 MEDIDO: 0 -> 122 Hz (M), 1 -> 200 Hz (F)
-    VoiceProfile("es-sharvard-m", "es", "Hugo (España)",   "M", "medio",  "es_ES-sharvard-medium.onnx", speaker_id=0),
-    VoiceProfile("es-sharvard-f", "es", "Elena (España)",  "F", "medio",  "es_ES-sharvard-medium.onnx", speaker_id=1),
-    VoiceProfile("es-claude",   "es", "Claudia (México)",  "F", "agudo",  "es_MX-claude-high.onnx"),
-    VoiceProfile("es-ald",      "es", "Aldo (México)",     "M", "medio",  "es_MX-ald-medium.onnx"),
+    VoiceProfile("es-sharvard-m", "es", "Hugo (España)",   "M", "medio",  "es_ES-sharvard-medium.onnx", speaker_id=0,
+                 license="CC BY 3.0 (Edinburgh DataShare)", commercial="atribuir"),
+    VoiceProfile("es-sharvard-f", "es", "Elena (España)",  "F", "medio",  "es_ES-sharvard-medium.onnx", speaker_id=1,
+                 license="CC BY 3.0 (Edinburgh DataShare)", commercial="atribuir"),
+    VoiceProfile("es-claude",   "es", "Claudia (México)",  "F", "agudo",  "es_MX-claude-high.onnx",
+                 license="Sin corpus citado en el MODEL_CARD", commercial="incierto"),
+    VoiceProfile("es-ald",      "es", "Aldo (México)",     "M", "medio",  "es_MX-ald-medium.onnx",
+                 license="Unlicense (dominio público)", commercial="ok"),
     # --- English ---
-    VoiceProfile("en-amy",      "en", "Amy (US)",          "F", "medio",  "en_US-amy-medium.onnx"),
-    VoiceProfile("en-ryan",     "en", "Ryan (US)",         "M", "medio",  "en_US-ryan-high.onnx"),
-    VoiceProfile("en-lessac",   "en", "Lessac (US)",       "F", "medio",  "en_US-lessac-medium.onnx"),
-    VoiceProfile("en-alan",     "en", "Alan (UK)",         "M", "grave",  "en_GB-alan-medium.onnx"),
-    # --- 한국어 (limitación conocida: una sola voz publicada en piper-voices) ---
-    VoiceProfile("ko-kss",      "ko", "지수 (KSS)",         "F", "medio",  "ko_KR-kss-medium.onnx"),
+    VoiceProfile("en-amy",      "en", "Amy (US)",          "F", "medio",  "en_US-amy-medium.onnx",
+                 license="Sin licencia localizable", commercial="incierto"),
+    VoiceProfile("en-ryan",     "en", "Ryan (US)",         "M", "medio",  "en_US-ryan-high.onnx",
+                 license="CC BY-NC-SA 4.0 (RyanSpeech)", commercial="no"),
+    VoiceProfile("en-lessac",   "en", "Lessac (US)",       "F", "medio",  "en_US-lessac-medium.onnx",
+                 license="Blizzard Challenge 2013 (research only)", commercial="no"),
+    VoiceProfile("en-alan",     "en", "Alan (UK)",         "M", "grave",  "en_GB-alan-medium.onnx",
+                 license="Documentación contradictoria (Mycroft/mimic3)", commercial="incierto"),
+    # --- 한국어 (limitación conocida: una sola voz publicada en piper-voices, y NO comercial:
+    #     un despliegue de pago en coreano exige sustituirla) ---
+    VoiceProfile("ko-kss",      "ko", "지수 (KSS)",         "F", "medio",  "ko_KR-kss-medium.onnx",
+                 license="CC BY-NC-SA 4.0 (Korean Single Speaker)", commercial="no"),
 ]
 
 PREVIEW_TEXTS = {

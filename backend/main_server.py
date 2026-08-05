@@ -82,6 +82,7 @@ from typing import Any, Optional
 import numpy as np
 from aiohttp import WSCloseCode, WSMsgType, web
 
+from backend import licensing, voice_catalog
 from backend.core_engine import (AudioFormatError, CoreEngine, EngineError,
                                  TranscriptionResult, voiced_rms)
 from backend.settings import PROJECT_ROOT, load_settings
@@ -1262,6 +1263,14 @@ def _build_ssl_context(settings: dict[str, Any]) -> ssl.SSLContext:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     settings = load_settings()
+    # Guardia de licencias ANTES de cargar nada: si se declara uso comercial y hay
+    # componentes no comerciales activos (NLLB, voces NC), mejor abortar aquí que
+    # descubrirlo facturando. En modo no comercial solo informa (ver backend/licensing.py)
+    try:
+        licensing.enforce(settings, list(voice_catalog.CATALOG))
+    except licensing.LicenseError as exc:
+        logger.error("%s", exc)
+        raise SystemExit(2) from exc
     logger.info("Cargando motores (Whisper + NLLB + TTS)... puede tardar en el primer arranque")
     server = TradIonServer(settings)
     app = build_app(server)

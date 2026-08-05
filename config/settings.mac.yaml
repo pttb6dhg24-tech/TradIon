@@ -1,6 +1,19 @@
 # TradIon — configuración central. TODA constante del sistema vive aquí; nada hardcodeado en los .py.
 # Hardware de referencia: MacBook Pro M3, 16 GB RAM unificada, sin CUDA (DOCUMENTO_MAESTRO §7).
 
+# ============================ LICENCIAS ============================
+# TradIon es AGPL-3.0, pero los MODELOS que ejecuta son de terceros y varios de los
+# que trae por defecto son NO COMERCIALES (NLLB-200 es CC-BY-NC-4.0; las voces
+# ko_KR-kss, en_US-ryan y en_US-lessac son CC BY-NC-SA / research only). La cláusula
+# NonCommercial restringe el USO, no solo la redistribución: no basta con que los
+# pesos los descargue el usuario. Detalle completo en THIRD_PARTY_LICENSES.md.
+licensing:
+  commercial_use: false           # false = uso personal, investigación o demostración:
+                                  # todo funciona igual y es legítimo.
+                                  # true  = el arranque FALLA si hay algún componente no
+                                  # comercial activo, diciéndote cuál y por qué
+                                  # sustituirlo. Ponlo en true ANTES de cobrar por nada.
+
 server:
   host: 0.0.0.0
   port: 8443

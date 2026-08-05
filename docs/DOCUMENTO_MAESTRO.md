@@ -848,6 +848,33 @@ SVO↔SOV lo aprende el transformer (atención cruzada), no reglas manuales.
   corregidos antes de que los juzgaran) y una propuesta de re-normalizar la
   distancia por 1.44, que habría saturado los arrastres al borde.
 
+- **2026-08-05 — Fase 0: TradIon pasa a AGPL-3.0 con modelo dual (decisión del
+  arquitecto).** Tras la auditoría del 04-08 (ver `THIRD_PARTY_LICENSES.md`), el
+  repositorio tenía un `LICENSE` incoherente: una paráfrasis abreviada de CC-BY-NC-4.0
+  seguida de una cláusula que declaraba el código MIT —sin incluir el texto de la MIT— y
+  un badge MIT en el README. Efecto: GitHub no detectaba licencia, y el README **invitaba
+  por escrito** a explotar comercialmente el código. Sustituido por el texto **íntegro y
+  sin modificar** de AGPL-3.0 (661 líneas de gnu.org), que es además la única de las seis
+  licencias evaluadas **compatible con la GPL-3.0 que arrastra `piper-tts>=1.6`**: la
+  AGPLv3 §13 autoriza expresamente *"link or combine any covered work with a work licensed
+  under version 3 of the GNU General Public License"* (verificado literalmente en el texto
+  oficial). BSL, FSL, Elastic v2 y propietaria quedan descartadas mientras se enlace Piper.
+  Compatibilidad del resto del stack confirmada con la posición de la FSF: Apache-2.0
+  *"compatible with version 3 of the GNU GPL"* (no con GPLv2), MIT/Expat y BSD-3
+  *"compatible with the GNU GPL"*, CC BY 4.0 *"compatible with all versions"*. El autor es
+  titular del 100 % (`git shortlog`: un solo contribuyente), así que puede otorgar licencia
+  comercial sin CLA — **hasta la primera contribución externa**, momento en que hará falta
+  uno (ojo art. 43.2 TRLPI: sin plazo expreso, la cesión caduca a los 5 años).
+  Añadido `THIRD_PARTY_LICENSES.md` (11 bibliotecas, 4 modelos, las 10 voces una a una con
+  su corpus y su fuente) y **`backend/licensing.py`**: guardia que audita la configuración
+  ANTES de cargar motores. Con `licensing.commercial_use: false` (defecto) solo informa —el
+  uso personal y de investigación con NLLB y las voces NC es legítimo—; con `true` aborta el
+  arranque nombrando cada componente y su sustituto. Verificado en los tres escenarios: por
+  defecto arranca; en modo comercial detecta los 7 incumplimientos (NLLB + 6 voces); con
+  OPUS-MT y solo las voces limpias, arranca. Sigue pendiente de Fase 1 lo que de verdad
+  desbloquea cobrar: sustituir NLLB y **resolver el coreano**, cuya única voz del catálogo
+  (`ko_KR-kss`) es CC BY-NC-SA.
+
 ## 🔗 Fuentes
 
 - Referencia integral: https://github.com/QuentinFuxa/WhisperLiveKit · Topología: https://github.com/niedev/RTranslator

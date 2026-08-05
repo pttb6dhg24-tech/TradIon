@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Licencia-MIT-blue.svg" alt="License MIT">
+  <img src="https://img.shields.io/badge/Licencia-AGPL--3.0-blue.svg" alt="License AGPL-3.0">
   <img src="https://img.shields.io/badge/Python-3.10+-blue.svg" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/Hardware-Apple_Silicon_|_NVIDIA_GPU-green.svg" alt="Hardware Support">
   <img src="https://img.shields.io/badge/Idiomas-ES_·_KO_·_EN-purple.svg" alt="Idiomas">
@@ -222,12 +222,38 @@ docs/       DOCUMENTO_MAESTRO.md — arquitectura, decisiones y diario de ingeni
 
 ---
 
-## ⚖️ Licencia y uso comercial (double licensing)
+## ⚖️ Licencia
 
-El código fuente de este repositorio (arquitectura TradIon, algoritmos de red y código del servidor) se publica bajo licencia **MIT**, permitiendo explícitamente su uso y explotación comercial.
+TradIon es **software libre**, publicado bajo **[AGPL-3.0-or-later](LICENSE)**.
+
+Copyright © 2026 Kevin Rodrigo Logro Sandoval.
+
+Puedes usarlo, estudiarlo, modificarlo y redistribuirlo, **incluso comercialmente**. La
+única condición del copyleft: si distribuyes el programa —o lo ofreces a través de una
+red— debes poner el código fuente correspondiente a disposición de esos usuarios, bajo
+esta misma licencia. El uso privado y el uso interno de una organización **no generan
+ninguna obligación**.
+
+### Licencia comercial (modelo dual)
+
+Si quieres integrar TradIon en un producto propietario o tu política interna no admite la
+AGPL, hay disponible una **licencia comercial** que exime del copyleft. El autor conserva
+el 100 % de los derechos sobre el código propio, así que puede otorgarla directamente.
+
+📩 **Licencias comerciales y soporte: [4-berro.ruedas@icloud.com](mailto:4-berro.ruedas@icloud.com)**
 
 > [!CAUTION]
-> **Aviso para uso comercial:**
-> Por defecto, la configuración descarga y usa el modelo **NLLB-200** (Meta), protegido bajo licencia **CC-BY-NC-4.0**, que **PROHÍBE ESTRICTAMENTE SU USO COMERCIAL**.
+> **La licencia de TradIon no cubre los modelos de terceros que descarga.**
 >
-> Si pretendes usar TradIon en un producto de pago o cualquier actividad con ánimo de lucro, **DEBES sustituir en `config/settings.yaml` el modelo NLLB por un modelo de traducción de licencia abierta o una API comercial** (p. ej. DeepL). El autor de TradIon no asume responsabilidad por el uso indebido de los pesos de Meta por terceros.
+> Por defecto se usa **NLLB-200** (Meta), bajo **CC-BY-NC-4.0**, que **prohíbe el uso
+> comercial** — y esa cláusula restringe *el uso*, no solo la redistribución, así que no
+> basta con que los pesos los descargue el usuario. Tres voces de Piper (incluida
+> `ko_KR-kss`, la única coreana) tienen también licencias no comerciales.
+>
+> Antes de cobrar por nada, pon `licensing.commercial_use: true` en
+> `config/settings.yaml`: TradIon comprobará su propia configuración al arrancar y te dirá
+> exactamente qué componente debes sustituir.
+>
+> El detalle completo —cada componente, su licencia y su fuente— está en
+> **[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)**, junto con los sustitutos de
+> licencia permisiva ya verificados.
