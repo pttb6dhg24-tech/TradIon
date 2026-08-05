@@ -67,6 +67,10 @@ const I18N = {
     sys_left: '{name} dejó la mesa',
     plan_title: 'Configuración de la mesa',
     plan_hint: 'Arrastra a cada persona a su sitio real alrededor de la mesa: su voz sonará desde esa dirección (audio 3D, mejor con auriculares).',
+    depth_label: 'Profundidad',
+    depth_hint: 'La tela marca la distancia: cuanto más lejos quede una ficha de la tuya, más tenue y apagada sonará su voz.',
+    depth_sutil: 'Sutil',
+    depth_inmersivo: 'Inmersivo',
     plan_done: 'Listo',
     mute_title: 'Silenciar micrófono',
     enroll_title: 'Calibración de voz',
@@ -121,6 +125,10 @@ const I18N = {
     sys_left: '{name} left the table',
     plan_title: 'Table setup',
     plan_hint: 'Drag each person to their real seat around the table: their voice will come from that direction (3D audio, best with headphones).',
+    depth_label: 'Depth',
+    depth_hint: 'The web is the distance scale: the farther a token sits from yours, the softer and more muffled that voice sounds.',
+    depth_sutil: 'Subtle',
+    depth_inmersivo: 'Immersive',
     plan_done: 'Done',
     mute_title: 'Mute microphone',
     enroll_title: 'Voice calibration',
@@ -175,6 +183,10 @@ const I18N = {
     sys_left: '{name}님이 나갔습니다',
     plan_title: '테이블 배치',
     plan_hint: '각 사람을 실제 자리로 드래그하세요. 그 방향에서 목소리가 들립니다 (3D 오디오, 이어폰 권장).',
+    depth_label: '깊이감',
+    depth_hint: '거미줄이 거리의 눈금입니다: 내 자리에서 멀수록 그 목소리가 더 작고 어둡게 들립니다.',
+    depth_sutil: '은은하게',
+    depth_inmersivo: '몰입형',
     plan_done: '완료',
     mute_title: '마이크 음소거',
     enroll_title: '음성 보정',
@@ -721,6 +733,7 @@ class TTSPlayer {
     this.nextStart = new Map();
     this.gains = new Map();      // speaker_id -> GainNode (gancho para PannerNode en F6)
     this.panners = new Map();    // speaker_id -> PannerNode (F6)
+    this.filters = new Map();    // speaker_id -> BiquadFilter lowpass de «aire» (F12)
     this._tail = new Map();      // speaker_id -> Promise (orden de LLEGADA garantizado)
     this._dropped = new Set();   // peers expulsados: sus TTS tardíos se descartan
   }
@@ -740,10 +753,11 @@ class TTSPlayer {
 
       // Modelo de distancia SUAVE: con los defaults (inverse, rolloff=1) el comensal de
       // enfrente (~7 m virtuales) sonaba 5x más bajo que el de al lado. rolloff 0.35
-      // mantiene una pista sutil de cercanía sin destrozar la inteligibilidad.
+      // mantiene una pista sutil de cercanía sin destrozar la inteligibilidad (la
+      // profundidad EXTRA de F12 la aporta el filtro de aire, no el volumen).
       panner.distanceModel = 'inverse';
       panner.refDistance = 2;
-      panner.rolloffFactor = 0.35;
+      panner.rolloffFactor = PANNER_ROLLOFF;
       // (sin maxDistance: en el modelo 'inverse' se ignora — solo aplica a 'linear')
 
       const pos = seats.ensure(speakerId);
@@ -753,7 +767,24 @@ class TTSPlayer {
 
       this.panners.set(speakerId, panner);
 
-      g.connect(panner);
+      // F12 — filtro de «aire»: lowpass entre la ganancia y el panner cuya
+      // frecuencia de corte depende de la distancia oyente→fuente (el aire real
+      // absorbe primero los agudos: la pista de profundidad que el rolloff de
+      // volumen solo no da). SNAP inicial obligatorio: el default de Biquad es
+      // 350 Hz y un glide desde ahí sonaría a "destaparse" en la primera frase.
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      // Butterworth REAL (sin pico de resonancia): en Web Audio la Q de un
+      // lowpass/highpass va en DECIBELIOS (el filtro usa 10^(Q/20)), no en
+      // lineal. Con el 0.707 "de libro" el Q efectivo era 1.085 y medí un
+      // realce de +1,7 dB justo bajo el corte: siseo añadido a las voces
+      // lejanas, lo contrario de lo que busca el filtro. 20·log10(1/√2) = -3,01
+      filter.Q.value = -3.01;
+      filter.frequency.value = airFrequency(speakerId);
+      this.filters.set(speakerId, filter);
+
+      g.connect(filter);
+      filter.connect(panner);
       panner.connect(this.output.input);
       this.gains.set(speakerId, g);
     }
@@ -819,6 +850,8 @@ class TTSPlayer {
     this._dropped.add(speakerId);
     this.gains.get(speakerId)?.disconnect();
     this.gains.delete(speakerId);
+    this.filters.get(speakerId)?.disconnect();
+    this.filters.delete(speakerId);
     this.panners.get(speakerId)?.disconnect();
     this.panners.delete(speakerId);
     this.nextStart.delete(speakerId);
@@ -829,6 +862,80 @@ class TTSPlayer {
 /** Escala mundo: [-1,1] del plano -> metros WebAudio. */
 const SPATIAL_SCALE = 5;
 const SPATIAL_TAU = 0.08;   // setTargetAtTime: ~63% del recorrido en 80 ms
+
+/* ============ F12 — Profundidad («tela de araña»): aire por distancia ============ */
+/* La profundidad la da un lowpass de «aire» por fuente (el aire absorbe primero
+ * los agudos: una voz lejana suena más APAGADA, no solo más baja). Nada de
+ * números para el usuario: la tela del plano ES la escala y el modo elige cuánto
+ * se nota.
+ *
+ * A PROPÓSITO los modos NO tocan el volumen (rolloffFactor queda en 0.35 para
+ * los dos): subirlo era la primera versión de esta función y re-introducía el
+ * defecto que ya se corrigió en F6 —el comensal de enfrente sonando 5x más bajo,
+ * ilegible—; además rolloffFactor es un atributo simple, no un AudioParam, así
+ * que cambiarlo en mitad de una frase da un salto de ganancia audible. El filtro
+ * no tiene ninguno de los dos problemas: se desliza con setTargetAtTime y no
+ * quita sonoridad, solo brillo. */
+const PANNER_ROLLOFF = 0.35;
+// fNear NO puede pasar de ~11 kHz: TODAS las voces Piper del catálogo son de
+// 22050 Hz (Nyquist 11025; carlfm-x_low incluso 16000), así que por encima no hay
+// señal que filtrar y el barrido se gastaba donde no se oye. Con el 16000 de la
+// primera versión, cualquier par de asientos CONTIGUOS del hexágono daba un corte
+// ≥11 kHz: el filtro era un no-op demostrable y el modo por defecto no hacía NADA
+// (medido sobre las previews reales: -0,02 dB a distancia de enfrentados).
+const DEPTH_PRESETS = {
+  sutil:     { fNear: 11000, fFar: 4500 },   // pista discreta pero AUDIBLE de lejanía
+  // El suelo no baja de 3000 Hz: la banda telefónica (300-3400 Hz) queda intacta,
+  // así que la voz TRADUCIDA sigue siendo inteligible — que es el producto
+  inmersivo: { fNear: 11000, fFar: 3000 },   // profundidad marcada
+};
+/** LEER localStorage LANZA (no devuelve null) cuando el origen tiene el
+ * almacenamiento bloqueado — Safari «Bloquear todas las cookies», que es un ajuste
+ * de un móvil cualquiera. Al ser nivel superior de un script CLÁSICO, esa excepción
+ * abortaba app.js ENTERO: ni cableado de eventos ni updateUI, el lobby se pintaba
+ * pero «Sentarse» no hacía nada y sin un solo error visible. */
+function _storedDepth() {
+  try {
+    return localStorage.getItem('tradion_depth') === 'inmersivo' ? 'inmersivo' : 'sutil';
+  } catch {
+    return 'sutil';
+  }
+}
+const depth = { mode: _storedDepth() };
+
+/** Frecuencia de corte del «aire» para una fuente: interpolación EXPONENCIAL
+ * (el oído es logarítmico) entre fNear y fFar según la distancia oyente→fuente
+ * en unidades del plano ([-1,1]: máximo 2 = esquinas opuestas). */
+function airFrequency(speakerId) {
+  const p = DEPTH_PRESETS[depth.mode];
+  const me = state.speakerId ? seats.positions.get(state.speakerId) : null;
+  const src = seats.positions.get(speakerId);
+  if (!me || !src) return p.fNear;   // sin geometría todavía: canal abierto
+  const t = Math.min(Math.hypot(src.x - me.x, src.y - me.y) / 2, 1);
+  return p.fNear * Math.pow(p.fFar / p.fNear, t);
+}
+
+function updateAir(speakerId) {
+  const f = player?.filters?.get(speakerId);
+  if (f && state.audioCtx) _glide(f.frequency, airFrequency(speakerId), state.audioCtx);
+}
+
+/** Al moverse EL OYENTE (o cambiar de modo) cambian TODAS las distancias. */
+function updateAllAir() {
+  if (!player?.filters) return;
+  for (const id of player.filters.keys()) updateAir(id);
+}
+
+/** Cambia el modo de profundidad en caliente: el aire de las fuentes vivas se
+ * desliza al nuevo corte (sin clicks), se persiste y se marcan los botones. */
+function setDepthMode(mode) {
+  if (!DEPTH_PRESETS[mode]) return;
+  depth.mode = mode;
+  try { localStorage.setItem('tradion_depth', mode); } catch { /* Safari privado */ }
+  document.querySelectorAll('.depth-toggle button').forEach((b) =>
+    b.setAttribute('aria-pressed', String(b.dataset.depth === mode)));
+  updateAllAir();
+}
 
 /** Mueve un AudioParam SIN saltos: asignar .value en pleno arrastre produce el
  * "zipper"/clicks que hacían sentir el 3D tosco. */
@@ -846,6 +953,7 @@ function positionPanner(speakerId, pos) {
   if (!p || !state.audioCtx) return;
   _glide(p.positionX, pos.x * SPATIAL_SCALE, state.audioCtx);
   _glide(p.positionZ, pos.y * SPATIAL_SCALE, state.audioCtx);
+  updateAir(speakerId);   // F12: la distancia cambió -> el «aire» también
 }
 
 /** F6-fix: el OYENTE debe estar en SU asiento mirando hacia donde mira su avatar.
@@ -884,6 +992,7 @@ function updateListener() {
     listener.setPosition(x, 0, z);
     listener.setOrientation(fx, 0, fz, 0, 1, 0);
   }
+  updateAllAir();   // F12: me moví YO -> cambian todas las distancias oyente→fuente
 }
 
 function handleBinary(buf) {
@@ -908,12 +1017,22 @@ const seats = {
   _dirty: false,
   _draggingId: null,      // ficha bajo MI dedo: los peer_moved sobre ella se ignoran
 
+  /** Respaldo si un miembro llega sin asiento del servidor (que sí los reparte sin
+   * colisión: main_server._seat/taken). Se elige la primera plaza hexagonal LIBRE,
+   * no `positions.size`: con size, tras salir el 2º de 3 el siguiente en entrar
+   * caía sobre el 3º — misma silla, mismo PannerNode, cero separación espacial
+   * entre dos voces y etiquetas superpuestas. */
   ensure(id) {
     if (!this.positions.has(id)) {
-      const i = this.positions.size;
-      const angle = (i * 2 * Math.PI) / 6 - Math.PI / 2;
-      const x = +(0.72 * Math.cos(angle)).toFixed(3);
-      const y = +(0.72 * Math.sin(angle)).toFixed(3);
+      const ocupada = (x, y) => [...this.positions.values()]
+        .some((p) => Math.hypot(p.x - x, p.y - y) < 0.05);
+      let x = 0, y = 0;
+      for (let i = 0; i < 6; i += 1) {
+        const angle = (i * 2 * Math.PI) / 6 - Math.PI / 2;
+        x = +(0.72 * Math.cos(angle)).toFixed(3);
+        y = +(0.72 * Math.sin(angle)).toFixed(3);
+        if (!ocupada(x, y)) break;   // (si las 6 están tomadas, cae en la última)
+      }
       const faceAngle = Math.atan2(-y, -x);
       this.positions.set(id, { x, y, angle: +faceAngle.toFixed(3) });
     }
@@ -980,7 +1099,11 @@ const seats = {
         positionPanner(seat.dataset.id, { x, y });   // suavizado: sin zipper al arrastrar
         if (seat.dataset.id === state.speakerId) updateListener();  // el oyente sigue mi dedo
       };
-      const up = () => {
+      const up = (ev2) => {
+        // La suelta TAMBIÉN posiciona: los navegadores agrupan los pointermove, así
+        // que en un gesto rápido el último move llega varios píxeles antes de donde
+        // el dedo se levanta y la ficha (y su panner) quedaban cortos
+        if (ev2 && Number.isFinite(ev2.clientX)) move(ev2);
         seat.classList.remove('dragging');
         this._draggingId = null;
         seat.removeEventListener('pointermove', move);
@@ -1456,6 +1579,15 @@ function handleMessage(msg) {
       for (const id of [...seats.positions.keys()])
         if (!state.room.has(id)) seats.positions.delete(id);
       player?.pruneSpeakers(new Set(state.room.keys()));
+      // El roster acaba de pisar seats.positions: los PANNERS deben seguirla o el
+      // 3D se queda en la geometría vieja (si otro arrastró una ficha durante
+      // nuestro corte, su peer_moved no nos llegó). Antes esto solo desafinaba de
+      // forma uniforme; desde F12 el «aire» sí se recalcula (updateListener ->
+      // updateAllAir) y las dos pistas de profundidad se CONTRADECÍAN: ficha al
+      // lado sonando brillante pero floja y desde el frente. Va antes de los
+      // pendingMoves para que el move propio retenido siga ganando.
+      // positionPanner es no-op sin panner y arrastra updateAir consigo.
+      for (const [id, pos] of seats.positions) positionPanner(id, pos);
       // El roster manda: cancelar TODO grace timer pendiente — uno armado antes de
       // NUESTRO corte dispararía tras reconectar y borraría (y enmudecería vía
       // _dropped) a un peer que el roster acaba de confirmar como PRESENTE
@@ -1500,7 +1632,15 @@ function handleMessage(msg) {
         break; // Cancelado el "dejó la mesa", reconexión invisible
       }
       state.room.set(msg.speaker_id, msg);
-      if (msg.x !== undefined) seats.positions.set(msg.speaker_id, { x: msg.x, y: msg.y, angle: msg.angle });
+      // Igual que la rama con grace: el servidor manda también aquí. El backend
+      // SUPRIME el peer_left cuando el mismo dispositivo re-entra mientras su
+      // leave() drena, así que este camino recibe reconexiones de peers cuyos
+      // nodos de audio siguen vivos — sin esto su panner (y su aire) se quedaban
+      // en la geometría que alguien le arrastró mientras estaba en el limbo
+      if (msg.x !== undefined) {
+        seats.positions.set(msg.speaker_id, { x: msg.x, y: msg.y, angle: msg.angle });
+        positionPanner(msg.speaker_id, msg);
+      }
       ui.renderRoom();
       ui.sysline(t('sys_joined', { name: msg.name, flag: FLAGS[msg.language] || '' }));
       break;
@@ -1770,6 +1910,13 @@ function _teardownAudio() {
   state.audioCtx?.close().catch(() => {});
   state.audioCtx = null;
   player = null;
+  // Un AudioContext CERRADO no dispara los onended pendientes, así que el
+  // contador de ducking se quedaba en >0 para siempre: al re-sentarse, el primer
+  // TTS lo subía a 2 y la condición `=== 1` ya no mandaba 'duck' al worklet —
+  // el micro NO se muteaba mientras hablaba el altavoz y Whisper volvía a
+  // transcribir el TTS (justo el bucle de realimentación que el half-duplex
+  // existe para cortar). Vive en window, así que hay que resetearlo a mano.
+  window.duckCount = 0;
   wakeLock?.release?.().catch(() => {});
   wakeLock = null;
 }
@@ -1837,6 +1984,10 @@ $('planBtn').addEventListener('click', () => {
   $('planModal').classList.remove('hidden');
 });
 $('planClose').addEventListener('click', () => $('planModal').classList.add('hidden'));
+// F12 — modos de profundidad (Sutil/Inmersivo) del modal de la mesa
+document.querySelectorAll('.depth-toggle button').forEach((b) =>
+  b.addEventListener('click', () => setDepthMode(b.dataset.depth)));
+setDepthMode(depth.mode);   // estado inicial: aria-pressed + preferencia persistida
 // Salida SIEMPRE disponible de la calibración (antes solo se escapaba por el
 // bug de z-index que dejaba la cabecera clicable sobre el modal)
 $('enrollExit').addEventListener('click', () => backToLobby());

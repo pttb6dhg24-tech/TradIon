@@ -345,7 +345,16 @@ html, body {
   position: fixed; inset: 0;
   background: rgba(4, 6, 10, .78);
   backdrop-filter: blur(4px);
-  display: flex; align-items: center; justify-content: center;
+  /* align-items: flex-start + margin:auto en la tarjeta, NO align-items:center:
+     con el centrado de flex lo que desborda por ARRIBA queda fuera del área
+     scrolleable (comportamiento clásico de flex) y el título salía cortado sin
+     forma de alcanzarlo. Así la tarjeta se centra cuando sobra sitio y cede al
+     borde superior —scrolleable— cuando no. Medido: con la fila de profundidad
+     de F12 la tarjeta pasó de 549 a 656 px y en un iPhone SE/8 vertical el botón
+     «Listo» quedaba fuera de pantalla, sin Escape ni clic-al-fondo: el usuario
+     atrapado en el modal hasta recargar. */
+  display: flex; align-items: flex-start; justify-content: center;
+  overflow-y: auto;
   padding: 20px;
   /* SIEMPRE por encima de la cabecera sticky (999): antes la barra superior
      quedaba encendida y clicable flotando sobre el modal atenuado */
@@ -360,6 +369,7 @@ html, body {
 }
 .modal-card {
   width: min(420px, 100%);
+  margin: auto;              /* centra si cabe; permite scroll si no (ver .modal) */
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: calc(var(--radius) + 6px);
@@ -385,6 +395,49 @@ html, body {
   margin: 0 auto;
   touch-action: none; /* el drag no debe hacer scroll */
 }
+/* F12 — tela de araña: anillos + radios como escala VISUAL de distancia (sin
+   números). Los anillos caen en r = 1/3, 2/3 y 1 del plano; las fichas mapean
+   [-1,1] -> 44% del ancho, así que sus diámetros son 2·r·44%. */
+.plan-web { position: absolute; inset: 0; pointer-events: none; }
+.plan-ring {
+  position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 1px dashed color-mix(in srgb, var(--dim) 38%, transparent);
+}
+.plan-ring.r1 { width: 29.3%; height: 29.3%; }
+.plan-ring.r2 { width: 58.7%; height: 58.7%; }
+.plan-ring.r3 { width: 88%;  height: 88%; border-style: solid; }
+.plan-spoke {
+  position: absolute; left: 50%; top: 6%;
+  width: 1px; height: 88%;
+  background: linear-gradient(to bottom,
+    color-mix(in srgb, var(--dim) 30%, transparent),
+    transparent 46%, transparent 54%,
+    color-mix(in srgb, var(--dim) 30%, transparent));
+}
+.plan-spoke.s2 { transform: rotate(45deg); }
+.plan-spoke.s3 { transform: rotate(90deg); }
+.plan-spoke.s4 { transform: rotate(135deg); }
+
+/* F12 — selector de modo de profundidad */
+.depth-row {
+  display: flex; align-items: center; justify-content: center;
+  gap: 10px; margin-top: 12px;
+}
+.depth-label { font-size: .8rem; font-weight: 600; color: var(--dim); }
+.depth-toggle { display: flex; gap: 0; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+.depth-toggle button {
+  border: none; background: transparent; color: var(--dim);
+  font-size: .8rem; font-weight: 600;
+  padding: 6px 14px; cursor: pointer;
+}
+.depth-toggle button[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  color: var(--text);
+}
+.depth-hint { font-size: .72rem; margin-top: 8px; }
+
 .plan-table {
   position: absolute; inset: 12%;
   /* Mesa HEXAGONAL (petición del arquitecto 2026-07-27) */
@@ -397,7 +450,12 @@ html, body {
 .seat {
   position: absolute;
   width: 52px; height: 52px;
-  margin: -26px 0 0 -26px; /* centrar sobre su coordenada */
+  /* El centrado sobre la coordenada lo hace el translate(-50%,-50%) que pone
+     seats.render() (independiente del tamaño de la ficha). SIN margen negativo:
+     con los dos a la vez la ficha se dibujaba 26 px arriba-izquierda de su
+     posición REAL — el audio (que usa pos.x/pos.y) y el plano discrepaban, y en
+     pleno arrastre la ficha flotaba fuera del dedo. Medido con la tela de araña
+     de F12 como regla: desfase -26 px con margen, 0 px sin él. */
   border-radius: 50%;
   display: grid; place-items: center;
   font-weight: 700; color: #08131f;
